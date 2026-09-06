@@ -675,19 +675,25 @@ def process_single_category_job(job: dict):
             for sf in strms:
                 base_fn = sf[:-5]
                 m = re.search(r'\(([^)]+)\)$', base_fn)
+                raw_ext = ('.' + m.group(1).lower()) if m else '.mp4'
                 ext = m.group(1) if m else 'mp4'
+                is_sub = raw_ext in COMPREHENSIVE_SUBTITLE_EXTS
+                
                 poster = os.path.join(root, f"{base_fn}-poster.jpg")
                 nfo = os.path.join(root, f"{base_fn}.nfo")
                 has_p = os.path.exists(poster) and os.path.getsize(poster) > 1000
                 has_n = os.path.exists(nfo)
                 
-                if not has_p: missing_covers_count += 1
-                if not has_n: missing_nfos_count += 1
+                # 字幕文件不计入待补封面和待补 NFO 统计
+                if not is_sub:
+                    if not has_p: missing_covers_count += 1
+                    if not has_n: missing_nfos_count += 1
                 
                 folder_items.append({
                     "strm_path": os.path.join(root, sf),
                     "base_name": base_fn,
                     "ext": ext,
+                    "is_sub": is_sub,
                     "poster_path": poster,
                     "thumb_path": os.path.join(root, f"{base_fn}-thumb.jpg"),
                     "nfo_path": nfo,
@@ -697,12 +703,13 @@ def process_single_category_job(job: dict):
             sub_batches[root] = folder_items
             total_v += len(folder_items)
 
-    # 精准统计真正需要工作的条目数
+    # 精准统计真正需要工作的条目数 (严格排除字幕文件)
     need_work_items = []
     for root, items in sub_batches.items():
         for it in items:
-            if not it["has_nfo"] or (extract_covers and not it["has_poster"]):
-                need_work_items.append((root, it))
+            if not it.get("is_sub", False):
+                if not it["has_nfo"] or (extract_covers and not it["has_poster"]):
+                    need_work_items.append((root, it))
                 
     target_limit = len(need_work_items) if (max_items <= 0) else min(len(need_work_items), max_items)
     gov_progress["total_videos"] = target_limit
