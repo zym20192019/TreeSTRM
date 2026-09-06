@@ -1,4 +1,5 @@
 import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -135,6 +136,7 @@ def load_config() -> dict:
         "layer_limit": 25,
         "sync_subtitles": True,
         "auto_cleanup_orphan": True,
+        "cover_threads": 3,
         "protected_categories": DEFAULT_PROTECTED_CATEGORIES,
         "ai_governance": {
             "enabled": True,
@@ -738,26 +740,28 @@ def process_single_category_job(job: dict):
         if session:
             folder_pickcode_map = fetch_folder_pickcodes(session, category_name, folder_path)
 
-        for it in items:
-            if processed_count >= target_limit: break
-            if gov_progress["is_paused_for_captcha"]: break
-            
-            # 如果既不需要补 NFO 也不需要补封面，直接 0 耗时跳过
-            if it["has_nfo"] and (not extract_covers or it["has_poster"]):
-                continue
-                
+        # 过滤本目录下真正需要处理的条目
+        active_items = [it for it in items if (not it["has_nfo"] or (extract_covers and not it["has_poster"]))]
+        if not active_items:
+            continue
+
+        # 先顺序极速完成 NFO 补齐与元数据准备
+        work_tasks = []
+        for it in active_items:
+            if processed_count >= target_limit or gov_progress["is_paused_for_captcha"]:
+                break
             processed_count += 1
             gov_progress["processed_videos"] = processed_count
-            
+
             with open(it["strm_path"], "r", encoding="utf-8") as sf:
                 raw_target = sf.read().strip()
                 video_name = os.path.basename(raw_target)
-                
+
             file_meta_info = folder_pickcode_map.get(video_name, {})
             file_size_bytes = file_meta_info.get('size', 0) if isinstance(file_meta_info, dict) else 0
             play_long_sec = file_meta_info.get('play_long', 0) if isinstance(file_meta_info, dict) else 0
             runtime_mins = round(play_long_sec / 60) if play_long_sec > 0 else 0
-            
+
             # 1. 补 NFO
             if not it["has_nfo"]:
                 rel_p = os.path.relpath(it["strm_path"], cfg.get("default_output"))
@@ -774,20 +778,28 @@ def process_single_category_job(job: dict):
                 write_nfo_file(it["nfo_path"], meta, runtime_mins=runtime_mins, filesize=file_size_bytes)
                 gov_progress["nfos_generated"] += 1
 
-            # 2. CD2 本地通道 Fast Seek 抽封面 (0 验证码、0.9s 秒级出图)
             if extract_covers and not it["has_poster"]:
-                safe_delay = get_dynamic_delay()
-                time.sleep(safe_delay)
+                seek_target = max(5, int(play_long_sec * 0.45)) if play_long_sec > 15 else 2
+                work_tasks.append((raw_target, it["poster_path"], it["thumb_path"], seek_target, video_name))
+
+        # 2. CD2 本地通道多线程并发 Fast Seek 抽封面 (动态线程数配置，0 验证码、0.9s 秒级出图)
+        if work_tasks:
+            worker_threads = max(1, min(10, int(cfg.get("cover_threads", 3))))
+            def _extract_worker(task):
+                raw_t, p_path, th_path, seek_t, v_name = task
                 try:
-                    seek_target = max(5, int(play_long_sec * 0.45)) if play_long_sec > 15 else 2
-                    ok = extract_cover_by_cd2(raw_target, it["poster_path"], it["thumb_path"], seek_sec=seek_target)
+                    ok = extract_cover_by_cd2(raw_t, p_path, th_path, seek_sec=seek_t)
                     if ok:
-                        gov_progress["covers_extracted"] += 1
-                        gov_progress["recent_success_streak"] += 1
-                        if gov_progress["covers_extracted"] % 10 == 0 or gov_progress["covers_extracted"] == 1:
-                            push_log(f"📸 [CD2直出] 成功补齐封面: {video_name[:25]}... (累计: {gov_progress['covers_extracted']} 张)")
+                        with gov_lock:
+                            gov_progress["covers_extracted"] += 1
+                            gov_progress["recent_success_streak"] += 1
+                            if gov_progress["covers_extracted"] % 10 == 0 or gov_progress["covers_extracted"] == 1:
+                                push_log(f"📸 [CD2直出-{worker_threads}线程] 成功补齐封面: {v_name[:25]}... (累计: {gov_progress['covers_extracted']} 张)")
                 except Exception:
                     pass
+
+            with ThreadPoolExecutor(max_workers=worker_threads) as pool:
+                list(pool.map(_extract_worker, work_tasks))
                     
     gov_progress["elapsed"] = round(time.time() - start_t, 2)
     done_msg = f"🎉 专区【{category_name}】CD2 无风控治理圆满完成！共补齐 NFO: {gov_progress['nfos_generated']} 个，补齐封面: {gov_progress['covers_extracted']} 张！耗时: {gov_progress['elapsed']}秒"
@@ -889,6 +901,7 @@ class ConfigModel(BaseModel):
     layer_limit: int = 25
     sync_subtitles: bool = True
     auto_cleanup_orphan: bool = True
+    cover_threads: int = 3
     protected_categories: List[str] = DEFAULT_PROTECTED_CATEGORIES
     ai_governance: AIGovModel
     auto_sync_enabled: bool

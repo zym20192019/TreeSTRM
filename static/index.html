@@ -284,7 +284,7 @@
                         <label class="block text-xs font-medium text-slate-400 mb-1.5">115 官方认证 Cookie</label>
                         <textarea id="cfg-cookie" rows="2" class="w-full px-3.5 py-2 rounded-xl bg-slate-900/80 border border-slate-700/80 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"></textarea>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                             <label class="block text-xs font-medium text-slate-400 mb-1.5">本地输出根目录</label>
                             <input type="text" id="cfg-default-output" class="w-full px-3.5 py-2 rounded-xl bg-slate-900/80 border border-slate-700/80 text-sm text-white focus:outline-none focus:border-indigo-500">
@@ -292,6 +292,10 @@
                         <div>
                             <label class="block text-xs font-medium text-slate-400 mb-1.5">STRM 挂载路径前缀</label>
                             <input type="text" id="cfg-default-prefix" class="w-full px-3.5 py-2 rounded-xl bg-slate-900/80 border border-slate-700/80 text-sm text-white focus:outline-none focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-400 mb-1.5">CD2 抽帧并发线程数</label>
+                            <input type="number" id="cfg-cover-threads" min="1" max="10" class="w-full px-3.5 py-2 rounded-xl bg-slate-900/80 border border-slate-700/80 text-sm text-white focus:outline-none focus:border-indigo-500">
                         </div>
                     </div>
                 </div>
@@ -358,6 +362,7 @@
                 document.getElementById('cfg-cookie').value = globalConfig.cookie || '';
                 document.getElementById('cfg-default-output').value = globalConfig.default_output || '/Movies/TreeStrms';
                 document.getElementById('cfg-default-prefix').value = globalConfig.default_prefix || '/movies/CloudDrive/115';
+                document.getElementById('cfg-cover-threads').value = globalConfig.cover_threads || 3;
                 
                 const aiCfg = globalConfig.ai_governance || {};
                 document.getElementById('cfg-ai-base').value = aiCfg.api_base || 'https://openrouter.ai/api/v1';
@@ -544,6 +549,7 @@
                 cookie: document.getElementById('cfg-cookie').value.trim(),
                 default_output: document.getElementById('cfg-default-output').value.trim(),
                 default_prefix: document.getElementById('cfg-default-prefix').value.trim(),
+                cover_threads: parseInt(document.getElementById('cfg-cover-threads').value) || 3,
                 layer_limit: 25,
                 sync_subtitles: true,
                 auto_cleanup_orphan: true,
