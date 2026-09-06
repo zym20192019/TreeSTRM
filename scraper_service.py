@@ -104,3 +104,71 @@ def generate_nfo_file_content(scene_data, video_filename):
     ET.SubElement(root, "lockdata").text = "true"
     
     return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode('utf-8')
+
+
+def clean_scene_name_rules(name: str) -> str:
+    """第一道防线：基于规范模式清洗"""
+    fn = re.sub(r'\.[^.]+$', '', name)
+    fn = re.sub(r'\(mp4\)|\(mkv\)|\(wmv\)|\(avi\)|XXX|2160p|1080p|720p|4k', '', fn, flags=re.IGNORECASE).strip()
+    tokens = [w.capitalize() for w in re.split(r'[._\s-]+', fn) if w]
+    return ".".join(tokens)
+
+def call_openrouter_batch_fix(filenames_list: list, ai_cfg: dict) -> list:
+    """第二道防线：AI 智能批量语义纠错（两轮补全）"""
+    if not filenames_list:
+        return []
+        
+    api_base = ai_cfg.get("api_base", "https://openrouter.ai/api/v1")
+    api_key = ai_cfg.get("api_key", "")
+    model = ai_cfg.get("model", "minimax/minimax-m2.7:free")
+    
+    if not api_key:
+        return []
+        
+    endpoint = f"{api_base.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    prompt = f"""You are a media file naming normalization expert.
+Given a list of video release filenames that failed scraping, analyze and repair each into standard release format (Studio.YY.MM.DD.Performer.Title).
+
+Input files:
+{json.dumps(filenames_list, ensure_ascii=False)}
+
+Output strictly valid JSON array of objects:
+[
+  {{"original": "raw_filename", "suggested": "Cleaned.Release.Name", "site": "Studio", "date": "YYYY-MM-DD"}}
+]
+No other text."""
+
+    try:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1
+        }
+        r = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+        if r.status_code == 200:
+            content = r.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+            m = re.search(r'\[\s*\{.*?\}\s*\]', content, re.DOTALL)
+            if m:
+                return json.loads(m.group(0))
+    except Exception as e:
+        print("AI batch fix error:", e)
+    return []
+
+def rename_115_file(session, file_id: str, new_name: str) -> bool:
+    """调用 115 官方 API 接口重命名云端文件"""
+    try:
+        url = "https://webapi.115.com/files/edit"
+        data = {
+            "fid": file_id,
+            "file_name": new_name
+        }
+        r = session.post(url, data=data, timeout=10).json()
+        return bool(r.get("state"))
+    except Exception as e:
+        print(f"115 重命名失败 [{file_id} ➔ {new_name}]:", e)
+    return False
