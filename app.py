@@ -1226,6 +1226,9 @@ def get_rules_api():
         if os.path.exists(r_dir):
             subdirs = sorted([d for d in os.listdir(r_dir) if os.path.isdir(os.path.join(r_dir, d))])
             subdirs_list = subdirs
+            v_set = set()
+            c_set = set()
+            n_set = set()
             for root, dirs, files in os.walk(r_dir):
                 for f in files:
                     if f.endswith('.strm'):
@@ -1234,11 +1237,15 @@ def get_rules_api():
                         if ext in COMPREHENSIVE_SUBTITLE_EXTS:
                             sub_count += 1
                         else:
-                            v_count += 1
-                    elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp'):
-                        c_count += 1
+                            v_set.add(os.path.join(root, f[:-5]))
+                    elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp') or f.endswith('-poster.gif'):
+                        m_base = re.sub(r'-poster\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
+                        c_set.add(os.path.join(root, m_base))
                     elif f.endswith('.nfo'):
-                        n_count += 1
+                        n_set.add(os.path.join(root, f[:-4]))
+            v_count = len(v_set)
+            c_count = len(c_set.intersection(v_set))
+            n_count = len(n_set.intersection(v_set))
                         
         c_pct = round(c_count / v_count * 100) if v_count > 0 else 100
         n_pct = round(n_count / v_count * 100) if v_count > 0 else 100
@@ -1322,10 +1329,10 @@ def get_categories():
     
     for d in subdirs:
         p = os.path.join(root_dir, d)
-        v_count = 0
         sub_count = 0
-        c_count = 0
-        n_count = 0
+        v_set = set()
+        c_set = set()
+        n_set = set()
         for root, _, files in os.walk(p):
             for f in files:
                 if f.endswith('.strm'):
@@ -1334,11 +1341,16 @@ def get_categories():
                     if ext in COMPREHENSIVE_SUBTITLE_EXTS:
                         sub_count += 1
                     else:
-                        v_count += 1
-                elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp'):
-                    c_count += 1
+                        v_set.add(os.path.join(root, f[:-5]))
+                elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp') or f.endswith('-poster.gif'):
+                    m_base = re.sub(r'-poster\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
+                    c_set.add(os.path.join(root, m_base))
                 elif f.endswith('.nfo'):
-                    n_count += 1
+                    n_set.add(os.path.join(root, f[:-4]))
+        
+        v_count = len(v_set)
+        c_count = len(c_set.intersection(v_set))
+        n_count = len(n_set.intersection(v_set))
                 
         is_scraped = d in protected_set
         
