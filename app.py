@@ -1148,6 +1148,112 @@ def trigger_official_scrape(category: str, max_items: int = 50):
     threading.Thread(target=_scrape_task, daemon=True).start()
     return {"status": "started", "message": f"已启动专区【{category}】官方原画刮削任务！"}
 
+
+@app.get("/api/rules")
+def get_rules_api():
+    """
+    通用对账任务管理列表：动态读取 config.json 中的所有 rules
+    """
+    cfg = load_config()
+    rules = cfg.get("rules", [])
+    output_base = cfg.get("default_output", "/Movies/TreeStrms")
+    
+    result = []
+    for r in rules:
+        r_name = r.get("name", "未命名任务")
+        r_id = r.get("id", r_name)
+        r_cid = r.get("cid", "")
+        r_dir = os.path.join(output_base, r_name)
+        
+        # 统计该对账任务目录下的实际文件与子专区数
+        v_count = 0
+        c_count = 0
+        n_count = 0
+        sub_count = 0
+        subdirs_list = []
+        
+        if os.path.exists(r_dir):
+            subdirs = sorted([d for d in os.listdir(r_dir) if os.path.isdir(os.path.join(r_dir, d))])
+            subdirs_list = subdirs
+            for root, dirs, files in os.walk(r_dir):
+                for f in files:
+                    if f.endswith('.strm'):
+                        m = re.search(r'\(([^)]+)\)\.strm$', f)
+                        ext = ('.' + m.group(1).lower()) if m else ''
+                        if ext in COMPREHENSIVE_SUBTITLE_EXTS:
+                            sub_count += 1
+                        else:
+                            v_count += 1
+                    elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp'):
+                        c_count += 1
+                    elif f.endswith('.nfo'):
+                        n_count += 1
+                        
+        c_pct = round(c_count / v_count * 100) if v_count > 0 else 100
+        n_pct = round(n_count / v_count * 100) if v_count > 0 else 100
+        
+        result.append({
+            "id": r_id,
+            "name": r_name,
+            "cid": r_cid,
+            "prefix": r.get("prefix", "/movies/CloudDrive/115"),
+            "output_dir": r.get("output_dir", output_base),
+            "enabled": r.get("enabled", True),
+            "last_sync": r.get("last_sync", "未同步"),
+            "last_status": r.get("last_status", "就绪"),
+            "video_count": v_count if v_count > 0 else r.get("video_count", 0),
+            "sub_count": sub_count if sub_count > 0 else r.get("sub_count", 0),
+            "cover_count": c_count,
+            "nfo_count": n_count,
+            "cover_pct": c_pct,
+            "nfo_pct": n_pct,
+            "sub_categories_count": len(subdirs_list)
+        })
+    return result
+
+@app.post("/api/rules/add")
+def add_rule_api(payload: dict):
+    cfg = load_config()
+    rules = cfg.get("rules", [])
+    name = payload.get("name", "").strip()
+    cid = payload.get("cid", "").strip()
+    if not name or not cid:
+        raise HTTPException(status_code=400, detail="任务名称与 115 目录 CID 不能为空！")
+    
+    # 检查重名
+    for r in rules:
+        if r.get("name") == name or r.get("cid") == cid:
+            raise HTTPException(status_code=400, detail=f"已存在同名或同 CID 任务：{name}")
+            
+    new_rule = {
+        "id": f"rule_{int(time.time())}",
+        "name": name,
+        "cid": cid,
+        "output_dir": payload.get("output_dir", cfg.get("default_output", "/Movies/TreeStrms")),
+        "prefix": payload.get("prefix", cfg.get("default_prefix", "/movies/CloudDrive/115")),
+        "sync_subtitles": True,
+        "enabled": True,
+        "last_sync": "刚刚创建",
+        "last_status": "就绪",
+        "video_count": 0,
+        "sub_count": 0
+    }
+    rules.append(new_rule)
+    cfg["rules"] = rules
+    save_config(cfg)
+    push_log(f"➕ 新增通用对账任务【{name}】(CID: {cid}) 成功！")
+    return {"status": "ok", "rule": new_rule}
+
+@app.delete("/api/rules/{rule_id}")
+def delete_rule_api(rule_id: str):
+    cfg = load_config()
+    rules = cfg.get("rules", [])
+    rules = [r for r in rules if r.get("id") != rule_id and r.get("name") != rule_id]
+    cfg["rules"] = rules
+    save_config(cfg)
+    push_log(f"🗑️ 已删除对账任务: {rule_id}")
+    return {"status": "ok"}
+
 @app.get("/api/categories")
 def get_categories():
     cfg = load_config()
