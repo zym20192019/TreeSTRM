@@ -1000,6 +1000,7 @@ def update_config(data: ConfigModel):
     cfg["layer_limit"] = data.layer_limit
     cfg["sync_subtitles"] = data.sync_subtitles
     cfg["auto_cleanup_orphan"] = data.auto_cleanup_orphan
+    cfg["cover_threads"] = data.cover_threads
     cfg["protected_categories"] = data.protected_categories
     cfg["ai_governance"] = data.ai_governance.dict()
     cfg["auto_sync_enabled"] = data.auto_sync_enabled
