@@ -454,11 +454,11 @@ def extract_cover_by_cd2(target_path: str, poster_path: str, thumb_path: str, se
         ]
         subprocess.run(cmd, capture_output=True, timeout=15)
         
-        # 若超长 seek 失败 (例如超短视频)，自适应回退到 2 秒处保底
+        # 若超长 seek 失败 (例如超短视频/动图短片)，自适应回退到 00:00:00.5 首帧处保底
         if not os.path.exists(poster_path) or os.path.getsize(poster_path) < 1000:
             cmd_fallback = [
                 'ffmpeg', '-y',
-                '-ss', '00:00:02',
+                '-ss', '00:00:00.5',
                 '-i', host_target,
                 '-vframes', '1',
                 '-vf', 'scale=min(1080\\,iw):-2',
@@ -1054,8 +1054,10 @@ def get_categories():
                         sub_count += 1
                     else:
                         v_count += 1
-                elif 'poster' in f: c_count += 1
-                elif f.endswith('.nfo'): n_count += 1
+                elif f.endswith('-poster.jpg') or f.endswith('-poster.png'):
+                    c_count += 1
+                elif f.endswith('.nfo'):
+                    n_count += 1
                 
         is_scraped = d in protected_set
         
