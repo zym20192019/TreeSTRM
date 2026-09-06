@@ -1,0 +1,7 @@
+# 忽略本地临时文件与数据
+data/
+*.log
+__pycache__/
+*.pyc
+.env
+.DS_Store
