@@ -429,8 +429,8 @@ def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: i
 
 # ----------------- CD2 本地通道 Fast Seek 抽帧核心 (0 验证码、0 拦截、0.9s 秒级出图) -----------------
 
-def extract_cover_by_cd2(target_path: str, poster_path: str, thumb_path: str) -> bool:
-    """直接走 CD2 本地挂载 Fast Seek，0 网络 API 调用，0 验证码，0.9s 秒级出图！"""
+def extract_cover_by_cd2(target_path: str, poster_path: str, thumb_path: str, seek_sec: int = 20) -> bool:
+    """直接走 CD2 本地挂载 Fast Seek (智能定位 45% 正片精彩画面)，0 验证码，0.9s 秒级出图！"""
     try:
         host_target = target_path
         if host_target.startswith('/movies/'):
@@ -439,28 +439,31 @@ def extract_cover_by_cd2(target_path: str, poster_path: str, thumb_path: str) ->
         if not os.path.exists(host_target):
             return False
             
-        # 优先 seek 到 5 秒正片处；若短视频不足 5 秒则自适应退回 1 秒处
+        # 优先 seek 到指定正片黄金时间点 (例如 45% 处)
+        s_time = time.strftime('%H:%M:%S', time.gmtime(seek_sec)) if seek_sec > 0 else '00:00:05'
         cmd = [
             'ffmpeg', '-y',
-            '-ss', '00:00:05',
+            '-ss', s_time,
             '-i', host_target,
             '-vframes', '1',
             '-vf', 'scale=min(1080\\,iw):-2',
             '-q:v', '3',
             poster_path
         ]
-        subprocess.run(cmd, capture_output=True, timeout=12)
+        subprocess.run(cmd, capture_output=True, timeout=15)
+        
+        # 若超长 seek 失败 (例如超短视频)，自适应回退到 2 秒处保底
         if not os.path.exists(poster_path) or os.path.getsize(poster_path) < 1000:
-            cmd2 = [
+            cmd_fallback = [
                 'ffmpeg', '-y',
-                '-ss', '00:00:01',
+                '-ss', '00:00:02',
                 '-i', host_target,
                 '-vframes', '1',
                 '-vf', 'scale=min(1080\\,iw):-2',
                 '-q:v', '3',
                 poster_path
             ]
-            subprocess.run(cmd2, capture_output=True, timeout=12)
+            subprocess.run(cmd_fallback, capture_output=True, timeout=15)
             
         if os.path.exists(poster_path) and os.path.getsize(poster_path) > 1000:
             subprocess.run(['cp', poster_path, thumb_path], capture_output=True)
@@ -776,7 +779,8 @@ def process_single_category_job(job: dict):
                 safe_delay = get_dynamic_delay()
                 time.sleep(safe_delay)
                 try:
-                    ok = extract_cover_by_cd2(raw_target, it["poster_path"], it["thumb_path"])
+                    seek_target = max(5, int(play_long_sec * 0.45)) if play_long_sec > 15 else 2
+                    ok = extract_cover_by_cd2(raw_target, it["poster_path"], it["thumb_path"], seek_sec=seek_target)
                     if ok:
                         gov_progress["covers_extracted"] += 1
                         gov_progress["recent_success_streak"] += 1
