@@ -329,6 +329,23 @@
         <section id="tab-content-settings" class="space-y-6 hidden">
             <div class="glass-panel rounded-2xl p-6">
                 <h3 class="text-base font-bold text-white mb-4 flex items-center space-x-2">
+                    <i class="bi bi-stars text-cyan-400"></i>
+                    <span>TPDB (ThePornDB / Adult API) 官方商业刮削配置</span>
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">API Base URL</label>
+                        <input type="text" id="cfg-tpdb-base" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500 font-mono" value="https://api.theporndb.net">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">TPDB API Token (密钥)</label>
+                        <input type="password" id="cfg-tpdb-token" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500 font-mono" placeholder="填入 TPDB 授权 Token">
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-panel rounded-2xl p-6">
+                <h3 class="text-base font-bold text-white mb-4 flex items-center space-x-2">
                     <i class="bi bi-robot text-indigo-400"></i>
                     <span>OpenRouter 大模型智能审批配置</span>
                 </h3>
@@ -720,6 +737,7 @@
         async function saveGlobalConfig() {
             const payload = {
                 cookie: document.getElementById('cfg-cookie').value.trim(),
+                tpdb_token: (document.getElementById('cfg-tpdb-token') ? document.getElementById('cfg-tpdb-token').value.trim() : ''),
                 default_output: document.getElementById('cfg-default-output').value.trim(),
                 default_prefix: document.getElementById('cfg-default-prefix').value.trim(),
                 cover_threads: parseInt(document.getElementById('cfg-cover-threads').value) || 3,
@@ -846,6 +864,7 @@
                 document.getElementById('cfg-ai-base').value = aiCfg.api_base || 'https://openrouter.ai/api/v1';
                 document.getElementById('cfg-ai-key').value = aiCfg.api_key || '';
                 document.getElementById('cfg-ai-model').value = aiCfg.model || 'minimax/minimax-m2.7:free';
+                if (document.getElementById('cfg-tpdb-token')) document.getElementById('cfg-tpdb-token').value = globalConfig.tpdb_token || 'GYJTmJLvxL1XKiQ3XSJhImg9fWb3C6yVztbNyp8pf1cd2f25';
                 
                 loadRulesList();
             } catch (e) {
