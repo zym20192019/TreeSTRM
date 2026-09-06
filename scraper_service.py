@@ -1,3 +1,58 @@
+
+def clean_fc2_id(filename: str):
+    m = re.search(r'(?:FC2[_-]?PPV[_-]?|FC2[_-]?)(\d{6,7})', filename, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m2 = re.search(r'(\d{6,7})', filename)
+    if m2:
+        return m2.group(1)
+    return None
+
+def scrape_fc2_official(fc2_id: str):
+    url = f"https://adult.contents.fc2.com/article/{fc2_id}/"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Cookie': 'age_check=1; adult=1; contents_adult=1;'
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(r.text, 'html.parser')
+            title_tag = soup.find('div', attrs={'data-section': 'userInfo'})
+            title = title_tag.find('h3').get_text(strip=True) if title_tag and title_tag.find('h3') else None
+            if not title:
+                h2 = soup.find('h2')
+                title = h2.get_text(strip=True) if h2 else f"FC2-PPV-{fc2_id}"
+                
+            poster = None
+            main_thumb = soup.find('div', class_='items_article_MainitemThumb')
+            if main_thumb and main_thumb.find('img'):
+                poster = main_thumb.find('img').get('src')
+                if poster and poster.startswith('//'):
+                    poster = 'https:' + poster
+                    
+            if not poster:
+                sample_li = soup.find('ul', class_='items_article_SampleImagesArea')
+                if sample_li and sample_li.find('a'):
+                    poster = sample_li.find('a').get('href')
+                    if poster and poster.startswith('//'):
+                        poster = 'https:' + poster
+                        
+            return {
+                'id': f"FC2-PPV-{fc2_id}",
+                'title': title,
+                'poster': poster,
+                'site': {'name': 'FC2-PPV'},
+                'description': title,
+                'date': None,
+                'performers': [],
+                'tags': ['FC2', 'PPV', '无码']
+            }
+    except Exception as e:
+        print(f"FC2 官方抓取异常 [{fc2_id}]:", e)
+    return None
+
 import os, sys, re, time, requests, threading
 import xml.etree.ElementTree as ET
 
@@ -27,6 +82,13 @@ def parse_scene_info(filename):
     return site, date_str, clean
 
 def scrape_official_scene(filename, parent_dir_name=""):
+    # 0. 如果是 FC2 专区或包含 FC2 编号，优先走 FC2 官方源
+    if 'fc2' in filename.lower() or 'fc2' in parent_dir_name.lower():
+        fid = clean_fc2_id(filename)
+        if fid:
+            res_fc2 = scrape_fc2_official(fid)
+            if res_fc2:
+                return res_fc2
     site, date_str, clean_title = parse_scene_info(filename)
     if not site and parent_dir_name:
         site = parent_dir_name
