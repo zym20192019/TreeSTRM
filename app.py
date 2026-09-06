@@ -1,3 +1,4 @@
+import scraper_service
 import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
@@ -1031,6 +1032,122 @@ def set_speed(delay: float):
 
 # ----------------- 二级专区 API -----------------
 
+
+@app.get("/api/tasks")
+def get_primary_tasks():
+    cfg = load_config()
+    rules = cfg.get("rules", [])
+    res = []
+    
+    root_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人")
+    total_videos = 0
+    total_subs = 0
+    total_covers = 0
+    total_nfos = 0
+    sub_categories_count = 0
+    
+    if os.path.exists(root_dir):
+        subdirs = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
+        sub_categories_count = len(subdirs)
+        for d in subdirs:
+            p = os.path.join(root_dir, d)
+            for root, _, files in os.walk(p):
+                for f in files:
+                    if f.endswith('.strm'):
+                        m = re.search(r'\(([^)]+)\)\.strm$', f)
+                        ext = ('.' + m.group(1).lower()) if m else ''
+                        if ext in COMPREHENSIVE_SUBTITLE_EXTS:
+                            total_subs += 1
+                        else:
+                            total_videos += 1
+                    elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp'):
+                        total_covers += 1
+                    elif f.endswith('.nfo'):
+                        total_nfos += 1
+                        
+    cover_pct = round(total_covers / total_videos * 100) if total_videos > 0 else 100
+    nfo_pct = round(total_nfos / total_videos * 100) if total_videos > 0 else 100
+    
+    res.append({
+        "id": "chengren",
+        "name": "成人",
+        "description": f"{sub_categories_count} 个专属分类子专区 · 涵盖 3D动漫、FC2、欧美大厂、无码女优、女团与车模等",
+        "badge": "核心媒体库",
+        "path": "/Movies/TreeStrms/成人",
+        "cid": "3291659674416491425",
+        "sub_categories_count": sub_categories_count,
+        "video_count": total_videos,
+        "sub_count": total_subs,
+        "cover_count": total_covers,
+        "nfo_count": total_nfos,
+        "cover_pct": cover_pct,
+        "nfo_pct": nfo_pct,
+        "last_sync": rules[0].get("last_sync", "实时") if rules else "实时",
+        "status": "就绪",
+        "status_color": "emerald"
+    })
+    
+    res.append({
+        "id": "movies_and_tv",
+        "name": "影视剧集 & 动漫",
+        "description": "电影、4K蓝光原盘、电视剧、短剧、国漫日漫等主流正剧库",
+        "badge": "规划拓展中",
+        "path": "/Movies/TreeStrms/影视",
+        "cid": "2557717596187131421",
+        "sub_categories_count": 0,
+        "video_count": 0,
+        "sub_count": 0,
+        "cover_count": 0,
+        "nfo_count": 0,
+        "cover_pct": 0,
+        "nfo_pct": 0,
+        "last_sync": "待接入",
+        "status": "模块待接入",
+        "status_color": "slate"
+    })
+    
+    return res
+
+@app.post("/api/categories/scrape_official")
+def trigger_official_scrape(category: str, max_items: int = 50):
+    cfg = load_config()
+    base_cat_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人", category)
+    if not os.path.exists(base_cat_dir):
+        return {"status": "error", "message": "专区路径不存在"}
+        
+    def _scrape_task():
+        push_log(f"======== 🎬 启动专区【{category}】ThePornDB 官方原画与元数据刮削 ========")
+        scraped_count = 0
+        poster_count = 0
+        for root, dirs, files in os.walk(base_cat_dir):
+            parent_dir = os.path.basename(root)
+            strms = [f for f in files if f.endswith('.strm')]
+            for sf in strms:
+                base_fn = sf[:-5]
+                poster_path = os.path.join(root, f"{base_fn}-poster.jpg")
+                nfo_path = os.path.join(root, f"{base_fn}.nfo")
+                
+                if not os.path.exists(poster_path) and not os.path.exists(os.path.join(root, f"{base_fn}-poster.jpeg")):
+                    scene = scraper_service.scrape_official_scene(base_fn, parent_dir)
+                    if scene:
+                        p_url = scene.get('poster') or (scene.get('background') or {}).get('full')
+                        if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
+                            poster_count += 1
+                            push_log(f"📸 [官方原画海报] 成功补齐: {base_fn} ➔ [{scene.get('title')}]")
+                            
+                        if not os.path.exists(nfo_path):
+                            nfo_content = scraper_service.generate_nfo_file_content(scene, base_fn)
+                            with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
+                                nfo_f.write(nfo_content)
+                            scraped_count += 1
+                    time.sleep(1.0)
+                    if max_items > 0 and (poster_count + scraped_count) >= max_items:
+                        break
+        push_log(f"🎉 专区【{category}】官方刮削完成！共补齐官方高清海报: {poster_count} 张，补齐 NFO: {scraped_count} 个！")
+        
+    threading.Thread(target=_scrape_task, daemon=True).start()
+    return {"status": "started", "message": f"已启动专区【{category}】官方原画刮削任务！"}
+
 @app.get("/api/categories")
 def get_categories():
     cfg = load_config()
@@ -1061,7 +1178,7 @@ def get_categories():
                         sub_count += 1
                     else:
                         v_count += 1
-                elif f.endswith('-poster.jpg') or f.endswith('-poster.png'):
+                elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp'):
                     c_count += 1
                 elif f.endswith('.nfo'):
                     n_count += 1

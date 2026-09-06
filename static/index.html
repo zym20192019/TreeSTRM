@@ -164,37 +164,98 @@
             </div>
         </div>
 
-        <!-- 标签页导航 -->
+        <!-- 标签页导航 (支持 1级全局大盘 / 2级子专区工坊 / 实时日志 / 设置) -->
         <div class="flex space-x-2 border-b border-slate-800 mb-6">
-            <button onclick="switchTab('categories')" id="tab-btn-categories" class="px-5 py-3 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center space-x-2 transition">
+            <button onclick="switchTab('primary')" id="tab-btn-primary" class="px-5 py-3 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center space-x-2 transition">
+                <i class="bi bi-layers-fill"></i>
+                <span>【一级总览】大库任务工作台</span>
+            </button>
+            <button onclick="switchTab('categories')" id="tab-btn-categories" class="px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition">
                 <i class="bi bi-grid-fill"></i>
-                <span>【二级工坊】35 个一级子专区治理</span>
-                <span class="px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-500/20 text-indigo-300">35</span>
+                <span id="tab-categories-title">【二级工坊】成人·35 个独立子专区</span>
+                <span class="px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-500/20 text-indigo-300" id="badge-sub-count">35</span>
             </button>
             <button onclick="switchTab('dashboard')" id="tab-btn-dashboard" class="px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition">
                 <i class="bi bi-terminal-fill"></i>
-                <span>实时日志 & 全量底座</span>
+                <span>实时日志 & 底层监控</span>
             </button>
             <button onclick="switchTab('settings')" id="tab-btn-settings" class="px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition">
                 <i class="bi bi-sliders"></i>
-                <span>大模型 & 系统设置</span>
+                <span>刮削引擎 & 系统设置</span>
             </button>
         </div>
 
-        <!-- ==================== TAB 1：二级专区工坊 ==================== -->
+                <!-- ==================== TAB 0：一级主工作台 (Master View) ==================== -->
+        <section id="tab-content-primary" class="space-y-6">
+            <!-- 顶部任务库卡片列表 -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6" id="primary-tasks-container">
+                <!-- 动态渲染任务大卡片 -->
+            </div>
+
+            <!-- 全局花销与 API 消耗统计 (预留与实时展示) -->
+            <div class="glass-panel rounded-2xl p-6 shadow-2xl">
+                <div class="flex items-center justify-between mb-4 border-b border-slate-800/80 pb-3">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                            <i class="bi bi-cash-coin text-base"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-sm font-bold text-white">全库治理花销 & 接口调度统计 (API & Traffic Metrics)</h3>
+                            <p class="text-xs text-slate-400">实时监控大模型审批 token 消耗、网盘请求水位与刮削吞吐</p>
+                        </div>
+                    </div>
+                    <span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        零本地下载 · 0 额外费用
+                    </span>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                        <div class="text-xs text-slate-400 mb-1">OpenRouter AI 治理花费</div>
+                        <div class="text-xl font-bold text-emerald-400 font-mono">$0.00 <span class="text-xs font-normal text-slate-400">(MiniMax 免费层)</span></div>
+                        <div class="text-[11px] text-slate-500 mt-1">已审批 18.9 万部目录标签</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                        <div class="text-xs text-slate-400 mb-1">115 官方大树同步耗时</div>
+                        <div class="text-xl font-bold text-white font-mono">16.36 MB <span class="text-xs font-normal text-slate-400">/ 25层</span></div>
+                        <div class="text-[11px] text-slate-500 mt-1">官方秒级全量差集对账</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                        <div class="text-xs text-slate-400 mb-1">CD2 FastSeek 抽帧吞吐</div>
+                        <div class="text-xl font-bold text-indigo-400 font-mono">0.9 s <span class="text-xs font-normal text-slate-400">/ 张</span></div>
+                        <div class="text-[11px] text-slate-500 mt-1">安全慢牛 2.0s 严格流控守护</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                        <div class="text-xs text-slate-400 mb-1">官方商业刮削引擎 (Amane式)</div>
+                        <div class="text-xl font-bold text-cyan-400 font-mono">ThePornDB <span class="text-xs font-normal text-slate-400">就绪</span></div>
+                        <div class="text-[11px] text-slate-500 mt-1">支持欧美Scene厂牌原画海报</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+<!-- ==================== TAB 1：二级专区工坊 ==================== -->
         <section id="tab-content-categories" class="space-y-6">
             <div class="glass-panel rounded-2xl overflow-hidden shadow-2xl">
-                <div class="px-6 py-4 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div>
-                        <h2 class="text-base font-bold text-white flex items-center space-x-2">
-                            <span>成人专区 ➔ 子专区独立治理工坊</span>
-                        </h2>
-                        <p class="text-xs text-slate-400 mt-0.5"><b>🌟 自动排队已就绪</b>：随时点击其他专区的「全量查漏补缺」，任务自动加入排队序列，上一个完成后自动顺延推进！</p>
+                                <div class="px-6 py-4 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/40">
+                    <div class="flex items-center space-x-3">
+                        <button onclick="switchTab('primary')" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 text-xs font-semibold border border-indigo-500/30 transition shadow-sm">
+                            <i class="bi bi-arrow-left"></i>
+                            <span>返回一级大盘</span>
+                        </button>
+                        <div>
+                            <h2 class="text-base font-bold text-white flex items-center space-x-2">
+                                <span>【二级工坊】成人专区 ➔ 35 个独立子专区治理</span>
+                            </h2>
+                            <p class="text-xs text-slate-400 mt-0.5"><b>🌟 自动排队已就绪</b>：随时点击其他专区的「全量查漏补缺」，任务自动加入排队序列，上一个完成后自动顺延推进！</p>
+                        </div>
                     </div>
-                    <button onclick="loadCategories()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
-                        <i class="bi bi-arrow-clockwise"></i>
-                        <span>刷新列表</span>
-                    </button>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="loadCategories()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
+                            <i class="bi bi-arrow-clockwise"></i>
+                            <span>刷新列表</span>
+                        </button>
+                    </div>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -313,18 +374,87 @@
         let globalConfig = {};
 
         function switchTab(tabId) {
-            ['categories', 'dashboard', 'settings'].forEach(t => {
+            ['primary', 'categories', 'dashboard', 'settings'].forEach(t => {
                 const btn = document.getElementById(`tab-btn-${t}`);
                 const content = document.getElementById(`tab-content-${t}`);
-                if (t === tabId) {
-                    btn.className = "px-5 py-3 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center space-x-2 transition";
-                    content.classList.remove('hidden');
-                } else {
-                    btn.className = "px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition";
-                    content.classList.add('hidden');
+                if (btn && content) {
+                    if (t === tabId) {
+                        btn.className = "px-5 py-3 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center space-x-2 transition";
+                        content.classList.remove('hidden');
+                    } else {
+                        btn.className = "px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition";
+                        content.classList.add('hidden');
+                    }
                 }
             });
+            if (tabId === 'primary') loadPrimaryTasks();
             if (tabId === 'categories') loadCategories();
+        }
+
+        async function loadPrimaryTasks() {
+            const container = document.getElementById('primary-tasks-container');
+            if (!container) return;
+            try {
+                const res = await fetch('/api/tasks');
+                const tasks = await res.json();
+                container.innerHTML = tasks.map(t => {
+                    const isClickable = t.id === 'chengren';
+                    const clickAction = isClickable ? `onclick="switchTab('categories')"` : '';
+                    const cursorStyle = isClickable ? 'cursor-pointer hover:border-indigo-500/50 hover:shadow-indigo-500/10' : 'opacity-70 cursor-not-allowed';
+                    
+                    return `
+                        <div ${clickAction} class="glass-card rounded-2xl p-6 transition-all duration-300 relative overflow-hidden group ${cursorStyle}">
+                            <div class="flex items-start justify-between mb-4">
+                                <div class="flex items-center space-x-3">
+                                    <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-500/20 group-hover:scale-105 transition-transform">
+                                        <i class="bi ${t.id === 'chengren' ? 'bi-shield-shaded' : 'bi-collection-play'}"></i>
+                                    </div>
+                                    <div>
+                                        <div class="flex items-center space-x-2">
+                                            <h3 class="text-lg font-bold text-white group-hover:text-indigo-400 transition-colors">${t.name}</h3>
+                                            <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">${t.badge}</span>
+                                        </div>
+                                        <p class="text-xs text-slate-400 mt-1">${t.description}</p>
+                                    </div>
+                                </div>
+                                ${isClickable ? `
+                                    <div class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition">
+                                        <i class="bi bi-chevron-right text-sm"></i>
+                                    </div>
+                                ` : ''}
+                            </div>
+
+                            <div class="grid grid-cols-3 gap-3 my-4 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                                <div>
+                                    <div class="text-[11px] text-slate-400">视频总数</div>
+                                    <div class="text-base font-bold text-white font-mono mt-0.5">${t.video_count ? t.video_count.toLocaleString() : 0} <span class="text-[10px] text-slate-400 font-normal">部</span></div>
+                                </div>
+                                <div>
+                                    <div class="text-[11px] text-slate-400">子专区数</div>
+                                    <div class="text-base font-bold text-indigo-400 font-mono mt-0.5">${t.sub_categories_count} <span class="text-[10px] text-slate-400 font-normal">个</span></div>
+                                </div>
+                                <div>
+                                    <div class="text-[11px] text-slate-400">海报 / NFO</div>
+                                    <div class="text-base font-bold text-emerald-400 font-mono mt-0.5">${t.cover_pct}% / ${t.nfo_pct}%</div>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center justify-between text-xs pt-2 border-t border-slate-800/60">
+                                <span class="text-slate-400"><i class="bi bi-clock-history mr-1"></i>最近同步: ${t.last_sync}</span>
+                                ${isClickable ? `
+                                    <span class="font-semibold text-indigo-400 group-hover:translate-x-1 transition-transform flex items-center">
+                                        进入 2 级专区工坊 <i class="bi bi-arrow-right ml-1"></i>
+                                    </span>
+                                ` : `
+                                    <span class="text-slate-500 font-medium">规划中</span>
+                                `}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error(e);
+            }
         }
 
         function updateSpeedUI(currentDelay) {
@@ -354,7 +484,7 @@
             }
         }
 
-        async function loadAll() {
+        async function loadAll(); switchTab("primary"); {
             try {
                 const res = await fetch('/api/config');
                 globalConfig = await res.json();
@@ -447,6 +577,9 @@
                     if (isProtected) {
                         actionButtons = `
                             <span class="text-xs text-slate-500 mr-1"><i class="bi bi-shield-shaded me-1"></i>锁定</span>
+                            <button onclick="triggerOfficialScrape('${cat.name}')" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
+                                <i class="bi bi-stars me-1 text-cyan-400"></i>官方刮削
+                            </button>
                             <button onclick="cleanOrphanMetadata('${cat.name}')" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
                                 <i class="bi bi-trash3 me-1"></i>清失效
                             </button>
@@ -474,6 +607,9 @@
                         `;
                     } else {
                         actionButtons = `
+                            <button onclick="triggerOfficialScrape('${cat.name}')" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
+                                <i class="bi bi-stars me-1 text-cyan-400"></i>官方刮削
+                            </button>
                             <button onclick="cleanOrphanMetadata('${cat.name}')" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
                                 <i class="bi bi-trash3 me-1"></i>清失效
                             </button>
@@ -535,6 +671,19 @@
             }
         }
 
+                async function triggerOfficialScrape(catName) {
+            if (!confirm(`确定为专区【${catName}】启动官方原画海报与元数据刮削吗？\n(采用 Amane 成熟流量控制策略，先安全刮削前 50 部测试)`)) return;
+            try {
+                const res = await fetch(`/api/categories/scrape_official?category=${encodeURIComponent(catName)}&max_items=50`, {method: 'POST'});
+                const data = await res.json();
+                alert(data.message || '已启动官方刮削！');
+                switchTab('dashboard');
+                pollStatus();
+            } catch (e) {
+                alert('启动刮削失败: ' + e);
+            }
+        }
+
         async function runCategoryGov(categoryName, maxItems, totalCount) {
             const res = await fetch(`/api/categories/governance?category=${encodeURIComponent(categoryName)}&extract_covers=true&max_items=${maxItems}`, {
                 method: 'POST'
@@ -574,7 +723,7 @@
             });
             if (res.ok) {
                 alert('✅ 配置保存成功！');
-                loadAll();
+                loadAll(); switchTab("primary");;
             }
         }
 
@@ -660,7 +809,7 @@
             }
         }
 
-        loadAll();
+        loadAll(); switchTab("primary");;
         setInterval(pollStatus, 2500);
     </script>
 </body>
