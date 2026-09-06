@@ -235,13 +235,13 @@
         </section>
 
 <!-- ==================== TAB 1：二级专区工坊 ==================== -->
-        <section id="tab-content-categories" class="space-y-6">
+        <section id="tab-content-categories" class="space-y-6 hidden">
             <div class="glass-panel rounded-2xl overflow-hidden shadow-2xl">
                                 <div class="px-6 py-4 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/40">
                     <div class="flex items-center space-x-3">
                         <button onclick="switchTab('primary')" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 text-xs font-semibold border border-indigo-500/30 transition shadow-sm">
                             <i class="bi bi-arrow-left"></i>
-                            <span>返回一级大盘</span>
+                            <span>返回上一级</span>
                         </button>
                         <div>
                             <h2 class="text-base font-bold text-white flex items-center space-x-2">
@@ -484,7 +484,7 @@
             }
         }
 
-        async function loadAll(); switchTab("primary"); {
+        async async function loadAll() {
             try {
                 const res = await fetch('/api/config');
                 globalConfig = await res.json();
@@ -723,7 +723,8 @@
             });
             if (res.ok) {
                 alert('✅ 配置保存成功！');
-                loadAll(); switchTab("primary");;
+                loadAll();
+        switchTab("primary");
             }
         }
 
@@ -809,7 +810,8 @@
             }
         }
 
-        loadAll(); switchTab("primary");;
+        loadAll();
+        switchTab("primary");
         setInterval(pollStatus, 2500);
     </script>
 </body>
