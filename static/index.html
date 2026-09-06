@@ -659,11 +659,11 @@
         }
 
         async function triggerOfficialScrape(catName) {
-            if (!confirm(`确定为专区【${catName}】启动官方原画海报与元数据刮削吗？\n(采用 Amane 严格流量控制策略，先安全刮削前 50 部测试)`)) return;
+            if (!confirm(`确定为专区【${catName}】启动全量官方原画海报与元数据刮削吗？`)) return;
             try {
-                const res = await fetch(`/api/categories/scrape_official?category=${encodeURIComponent(catName)}&max_items=50`, {method: 'POST'});
+                const res = await fetch(`/api/categories/scrape_official?category=${encodeURIComponent(catName)}&max_items=0`, {method: 'POST'});
                 const data = await res.json();
-                alert(data.message || '已启动官方刮削！');
+                alert(data.message || '已启动官方全量刮削！');
                 switchTab('dashboard');
                 pollStatus();
             } catch (e) {

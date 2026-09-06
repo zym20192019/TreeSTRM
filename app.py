@@ -1109,7 +1109,7 @@ def get_primary_tasks():
     return res
 
 @app.post("/api/categories/scrape_official")
-def trigger_official_scrape(category: str, max_items: int = 50):
+def trigger_official_scrape(category: str, max_items: int = 0):
     cfg = load_config()
     base_cat_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人", category)
     if not os.path.exists(base_cat_dir):
