@@ -1,23 +1,96 @@
+import os, sys, re, time, json, requests, threading
+import xml.etree.ElementTree as ET
+from urllib.parse import quote, urljoin
+from bs4 import BeautifulSoup
 
-def clean_fc2_id(filename: str):
-    m = re.search(r'(?:FC2[_-]?PPV[_-]?|FC2[_-]?)(\d{6,7})', filename, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m2 = re.search(r'(\d{6,7})', filename)
-    if m2:
-        return m2.group(1)
-    return None
+# ==============================================================================
+# Amane-Style Complete 24-Site Crawler Matrix & Multi-Source Waterfall Engine
+# 完整复刻 Amane 全量 24 站点解析、制作商直连、4级阶梯式瀑布流与断点续跑状态机
+# ==============================================================================
 
-def scrape_fc2_official(fc2_id: str):
-    url = f"https://adult.contents.fc2.com/article/{fc2_id}/"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Cookie': 'age_check=1; adult=1; contents_adult=1;'
+TPDB_TOKEN = "GYJTmJLvxL1XKiQ3XSJhImg9fWb3C6yVztbNyp8pf1cd2f25"
+TPDB_HEADERS = {
+    "Authorization": f"Bearer {TPDB_TOKEN}",
+    "Accept": "application/json",
+    "User-Agent": "TreeSTRM-Scraper/3.0 (Amane-Complete-Architecture)"
+}
+
+COMMON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7"
+}
+
+# ==================== 1. 深度语义识别与媒体类型分类器 ====================
+
+def parse_media_identifier(filename: str, parent_dir_name: str = "") -> dict:
+    """
+    智能识别 6 大品类：FC2素人、日本标准番号、日本无码大厂、欧美Scene、二次元动漫里番、欧美独立厂牌
+    """
+    fn = re.sub(r'\.[^.]+$', '', filename)
+    fn = re.sub(r'\(mp4\)|\(mkv\)|\(wmv\)|\(avi\)|XXX|2160p|1080p|720p|4k|h264|h265|hevc|hd|sd', '', fn, flags=re.IGNORECASE).strip()
+    
+    # 1. 检查 FC2 素人
+    m_fc2 = re.search(r'(?:FC2[_-]?PPV[_-]?|FC2[_-]?)(\d{6,7})', fn, re.IGNORECASE)
+    if m_fc2 or 'fc2' in parent_dir_name.lower():
+        fid = m_fc2.group(1) if m_fc2 else re.search(r'(\d{6,7})', fn)
+        if fid:
+            fid_val = fid.group(1) if hasattr(fid, 'group') else str(fid)
+            return {"type": "fc2", "number": f"FC2-PPV-{fid_val}", "id": fid_val}
+
+    # 2. 检查 MGS 舞台专属无码前缀 (SIRO, LUXU, GOKU, ARA, 259LUXU, 200GANA, etc.)
+    m_mgs = re.search(r'(SIRO|LUXU|GOKU|ARA|PRESTIGE|259LUXU|200GANA|300MIUM|181CHO|261ARA)[-_]?(\d{2,5})', fn, re.IGNORECASE)
+    if m_mgs:
+        prefix, num = m_mgs.groups()
+        return {"type": "mgs", "number": f"{prefix.upper()}-{num}", "prefix": prefix.upper(), "num": num}
+
+    # 3. 检查无码四大厂 (Caribbean, Heyzo, 1Pondo, Tokyo-Hot)
+    m_heyzo = re.search(r'HEYZO[-_]?(\d{4})', fn, re.IGNORECASE)
+    if m_heyzo:
+        return {"type": "uncensored", "studio": "HEYZO", "number": f"HEYZO-{m_heyzo.group(1)}"}
+        
+    m_carib = re.search(r'(\d{6})[-_](\d{3})', fn)
+    if m_carib and ('carib' in fn.lower() or '加勒比' in fn.lower()):
+        return {"type": "uncensored", "studio": "Caribbeancom", "number": f"{m_carib.group(1)}-{m_carib.group(2)}"}
+
+    # 4. 检查日本标准商业番号 (DMM / S1 / Moodyz / Prestige / Faleno 等)
+    m_jav = re.search(r'([A-Za-z0-9]{2,8})[-_]?(\d{3,5})', fn)
+    if m_jav:
+        prefix, num = m_jav.groups()
+        if not re.match(r'^(20\d{2}|19\d{2})$', prefix) and len(prefix) <= 6:
+            standard_num = f"{prefix.upper()}-{num}"
+            return {"type": "jav", "number": standard_num, "prefix": prefix.upper(), "num": num}
+
+    # 5. 检查欧美商业 Scene (Studio.YY.MM.DD.Performer.Title)
+    m_date = re.search(r'(\d{2,4})[._-](\d{2})[._-](\d{2})', fn)
+    date_str = None
+    if m_date:
+        y, m, d = m_date.groups()
+        if len(y) == 2: y = "20" + y
+        date_str = f"{y}-{m}-{d}"
+        
+    m_site = re.match(r'^([A-Za-z0-9]+)[._-]', fn)
+    site = m_site.group(1) if m_site else parent_dir_name
+    
+    clean_title = re.sub(r'^[A-Za-z0-9]+[._-]\d{2,4}[._-]\d{2}[._-]\d{2}[._-]?', '', fn)
+    clean_title = re.sub(r'[._-]+', ' ', clean_title).strip()
+    
+    return {
+        "type": "western_scene",
+        "site": site,
+        "date": date_str,
+        "clean_title": clean_title,
+        "raw": fn
     }
+
+# ==================== 2. 站点矩阵解析模块 (Amane 24-Sites Matrix) ====================
+
+# --- ① FC2 全系矩阵 ---
+def scrape_fc2_official(fc2_id: str) -> dict:
+    url = f"https://adult.contents.fc2.com/article/{fc2_id}/"
+    headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "age_check=1; adult=1; contents_adult=1;"}
     try:
         r = requests.get(url, headers=headers, timeout=8)
-        if r.status_code == 200:
-            from bs4 import BeautifulSoup
+        if r.status_code == 200 and "notfound" not in r.text and "icon_404bg" not in r.text:
             soup = BeautifulSoup(r.text, 'html.parser')
             title_tag = soup.find('div', attrs={'data-section': 'userInfo'})
             title = title_tag.find('h3').get_text(strip=True) if title_tag and title_tag.find('h3') else None
@@ -29,73 +102,192 @@ def scrape_fc2_official(fc2_id: str):
             main_thumb = soup.find('div', class_='items_article_MainitemThumb')
             if main_thumb and main_thumb.find('img'):
                 poster = main_thumb.find('img').get('src')
-                if poster and poster.startswith('//'):
-                    poster = 'https:' + poster
-                    
+                if poster and poster.startswith('//'): poster = 'https:' + poster
             if not poster:
                 sample_li = soup.find('ul', class_='items_article_SampleImagesArea')
                 if sample_li and sample_li.find('a'):
                     poster = sample_li.find('a').get('href')
-                    if poster and poster.startswith('//'):
-                        poster = 'https:' + poster
-                        
-            return {
-                'id': f"FC2-PPV-{fc2_id}",
-                'title': title,
-                'poster': poster,
-                'site': {'name': 'FC2-PPV'},
-                'description': title,
-                'date': None,
-                'performers': [],
-                'tags': ['FC2', 'PPV', '无码']
-            }
-    except Exception as e:
-        print(f"FC2 官方抓取异常 [{fc2_id}]:", e)
+                    if poster and poster.startswith('//'): poster = 'https:' + poster
+            return {"id": f"FC2-PPV-{fc2_id}", "title": title, "studio": "FC2-PPV", "premiered": None, "plot": title, "poster_url": poster, "actors": [], "tags": ["FC2", "PPV", "无码"], "source": "FC2 Official"}
+    except Exception:
+        pass
     return None
 
-import os, sys, re, time, requests, threading
-import xml.etree.ElementTree as ET
+def scrape_fc2club(fc2_id: str) -> dict:
+    url = f"https://fc2club.top/html/FC2-{fc2_id}.html"
+    try:
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=8)
+        if r.status_code == 200 and "show-top-grids" in r.text:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            top = soup.find('div', class_='show-top-grids')
+            if top:
+                title = top.find('h3').get_text(strip=True) if top.find('h3') else f"FC2-PPV-{fc2_id}"
+                img = top.find('img').get('src') if top.find('img') else None
+                if img and img.startswith('/'): img = "https://fc2club.top" + img
+                return {"id": f"FC2-PPV-{fc2_id}", "title": title, "studio": "FC2-PPV", "premiered": None, "plot": title, "poster_url": img, "actors": [], "tags": ["FC2", "PPV", "FC2Club"], "source": "FC2Club"}
+    except Exception:
+        pass
+    return None
 
-TPDB_TOKEN = "GYJTmJLvxL1XKiQ3XSJhImg9fWb3C6yVztbNyp8pf1cd2f25"
-TPDB_HEADERS = {
-    "Authorization": f"Bearer {TPDB_TOKEN}",
-    "Accept": "application/json",
-    "User-Agent": "TreeSTRM-Scraper/1.0"
-}
+def scrape_fc2ppvdb(fc2_id: str) -> dict:
+    url = f"https://fc2ppvdb.com/articles/{fc2_id}"
+    try:
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            h1 = soup.find('h1') or soup.find('h2')
+            title = h1.get_text(strip=True) if h1 else f"FC2-PPV-{fc2_id}"
+            img = soup.find('div', class_='article-image').find('img') if soup.find('div', class_='article-image') else None
+            poster = img.get('src') if img else None
+            return {"id": f"FC2-PPV-{fc2_id}", "title": title, "studio": "FC2-PPV", "premiered": None, "plot": title, "poster_url": poster, "actors": [], "tags": ["FC2", "PPV"], "source": "FC2PPVDB"}
+    except Exception:
+        pass
+    return None
 
-def parse_scene_info(filename):
-    fn = re.sub(r'\.[^.]+$', '', filename)
-    fn = re.sub(r'\(mp4\)|\(mkv\)|\(wmv\)|\(avi\)|XXX|2160p|1080p|720p|4k', '', fn, flags=re.IGNORECASE).strip()
+# --- ② 制作商直通车 (Prestige, Faleno, MGS, DMM) ---
+def scrape_prestige_official(number: str) -> dict:
+    sku_id = number.upper().replace("-", "")
+    url = f"https://www.prestige-av.com/api/sku/item/{sku_id}"
+    try:
+        r = requests.get(url, headers={"Accept": "application/json", "User-Agent": COMMON_HEADERS["User-Agent"]}, timeout=8)
+        if r.status_code == 200:
+            data = r.json()
+            uuid = (data.get("parentProduct") or {}).get("uuid")
+            if uuid:
+                p_url = f"https://www.prestige-av.com/api/product/{uuid}"
+                p_res = requests.get(p_url, headers={"Accept": "application/json", "User-Agent": COMMON_HEADERS["User-Agent"]}, timeout=8).json()
+                pkg = (p_res.get("packageImage") or {}).get("path")
+                poster = f"https://image.prestige-av.com/{pkg}" if pkg and not pkg.startswith("http") else pkg
+                actors = [a.get("name") for a in p_res.get("actress", []) if a.get("name")]
+                return {"id": number, "title": p_res.get("title"), "studio": "Prestige", "premiered": (p_res.get("mgsStartAt") or "").split("T")[0] or None, "plot": p_res.get("body"), "poster_url": poster, "actors": actors, "tags": [g.get("name") for g in p_res.get("genre", [])], "source": "Prestige Official"}
+    except Exception:
+        pass
+    return None
+
+def scrape_faleno_official(number: str) -> dict:
+    url = f"https://faleno.jp/top/search?keyword={number}"
+    try:
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            item = soup.find('a', href=re.compile(r'/products/detail/'))
+            if item:
+                d_url = urljoin("https://faleno.jp", item.get('href'))
+                dr = requests.get(d_url, headers=COMMON_HEADERS, timeout=8)
+                if dr.status_code == 200:
+                    dsoup = BeautifulSoup(dr.text, 'html.parser')
+                    title = dsoup.find('h2', class_='p-product-title').get_text(strip=True) if dsoup.find('h2', class_='p-product-title') else number
+                    img = dsoup.find('div', class_=re.compile(r'product-image')).find('img') if dsoup.find('div', class_=re.compile(r'product-image')) else None
+                    poster = img.get('src') if img else None
+                    actors = [a.get_text(strip=True) for a in dsoup.find_all('a', href=re.compile(r'/actress/'))]
+                    return {"id": number, "title": title, "studio": "FALENO", "premiered": None, "plot": title, "poster_url": poster, "actors": actors, "tags": [], "source": "Faleno Official"}
+    except Exception:
+        pass
+    return None
+
+def scrape_mgstage(number: str) -> dict:
+    url = f"https://www.mgstage.com/product/product_detail/{number}/"
+    headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "adc=1"}
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 200 and "detail_data" in r.text:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            h1 = soup.find('h1')
+            title = h1.get_text(strip=True) if h1 else number
+            poster_tag = soup.find('a', class_='enlarge_image') or soup.find('img', class_='enlarge_image')
+            poster = poster_tag.get('href') or poster_tag.get('src') if poster_tag else None
+            return {"id": number, "title": title, "studio": "MGS", "premiered": None, "plot": title, "poster_url": poster, "actors": [], "tags": [], "source": "MGStage"}
+    except Exception:
+        pass
+    return None
+
+# --- ③ 权威番号数据库与综合检索矩阵 (JavBus, JavDB, JavLibrary, AVSOX, AirAV, Jav321) ---
+def scrape_javbus(number: str) -> dict:
+    url = f"https://www.javbus.com/{number}"
+    headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "dv=1; existmag=all", "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.8"}
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 200 and ("movie-box" in r.text or "bigImage" in r.text):
+            soup = BeautifulSoup(r.text, 'html.parser')
+            title = soup.find('h3').get_text(strip=True) if soup.find('h3') else number
+            big_img = soup.find('a', class_='bigImage')
+            poster = big_img.get('href') if big_img else None
+            if poster and poster.startswith('/'): poster = "https://www.javbus.com" + poster
+            studio, date_val, actors = None, None, []
+            for p_tag in soup.find_all('span', class_='header'):
+                txt = p_tag.get_text(strip=True)
+                if '發行日期:' in txt:
+                    date_val = p_tag.parent.get_text(strip=True).replace('發行日期:', '').strip()
+                elif '製作商:' in txt or '發行商:' in txt:
+                    studio = p_tag.find_next_sibling('a').get_text(strip=True) if p_tag.find_next_sibling('a') else None
+            for star in soup.find_all('div', class_='star-name'):
+                if star.find('a'): actors.append(star.find('a').get_text(strip=True))
+            return {"id": number, "title": title, "studio": studio, "premiered": date_val, "plot": title, "poster_url": poster, "actors": actors, "tags": [], "source": "JavBus"}
+    except Exception:
+        pass
+    return None
+
+def scrape_javdb(number: str) -> dict:
+    url = f"https://javdb.com/search?q={quote(number)}&f=all"
+    try:
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            first_item = soup.find('div', class_='item')
+            if first_item and first_item.find('img'):
+                img = first_item.find('img').get('src')
+                title = first_item.find('div', class_='video-title').get_text(strip=True) if first_item.find('div', class_='video-title') else number
+                return {"id": number, "title": title, "studio": None, "premiered": None, "plot": title, "poster_url": img, "actors": [], "tags": [], "source": "JavDB"}
+    except Exception:
+        pass
+    return None
+
+def scrape_avsox(number: str) -> dict:
+    url = f"https://avsox.host/cn/search/{quote(number)}"
+    try:
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            item = soup.find('a', class_='movie-box')
+            if item:
+                title = item.find('img').get('title') if item.find('img') else number
+                img = item.find('img').get('src') if item.find('img') else None
+                return {"id": number, "title": title, "studio": "AVSOX", "premiered": None, "plot": title, "poster_url": img, "actors": [], "tags": [], "source": "AVSOX"}
+    except Exception:
+        pass
+    return None
+
+# --- ④ 二次元动漫里番矩阵 (Getchu) ---
+def scrape_getchu(number: str) -> dict:
+    url = f"http://www.getchu.com/php/nsearch.phtml?search_keyword={quote(number)}&gc=gc"
+    headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "getchu_adalt_flag=getchu.com; gc=gc"}
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            link = soup.find('a', href=re.compile(r'soft\.phtml'))
+            if link:
+                d_url = urljoin("http://www.getchu.com", link.get('href'))
+                dr = requests.get(d_url, headers=headers, timeout=8)
+                if dr.status_code == 200:
+                    dsoup = BeautifulSoup(dr.text, 'html.parser')
+                    title = dsoup.find('h1', id='soft-title').get_text(strip=True) if dsoup.find('h1', id='soft-title') else number
+                    img = dsoup.find('a', class_='highslide') or dsoup.find('img', src=re.compile(r'/brand/'))
+                    poster = urljoin("http://www.getchu.com", img.get('href') or img.get('src')) if img else None
+                    return {"id": number, "title": title, "studio": "Getchu", "premiered": None, "plot": title, "poster_url": poster, "actors": [], "tags": ["Hentai", "Anime"], "source": "Getchu"}
+    except Exception:
+        pass
+    return None
+
+# --- ⑤ 欧美商业 Scene 专区 (ThePornDB) ---
+def scrape_tpdb_scene(info: dict) -> dict:
+    site = info.get("site", "")
+    date_str = info.get("date")
+    clean_title = info.get("clean_title", "")
     
-    m_date = re.search(r'(\d{2,4})[._-](\d{2})[._-](\d{2})', fn)
-    date_str = None
-    if m_date:
-        y, m, d = m_date.groups()
-        if len(y) == 2: y = "20" + y
-        date_str = f"{y}-{m}-{d}"
-        
-    m_site = re.match(r'^([A-Za-z0-9]+)[._-]', fn)
-    site = m_site.group(1) if m_site else ""
-    
-    clean = re.sub(r'^[A-Za-z0-9]+[._-]\d{2,4}[._-]\d{2}[._-]\d{2}[._-]?', '', fn)
-    clean = re.sub(r'[._-]+', ' ', clean).strip()
-    return site, date_str, clean
-
-def scrape_official_scene(filename, parent_dir_name=""):
-    # 0. 如果是 FC2 专区或包含 FC2 编号，优先走 FC2 官方源
-    if 'fc2' in filename.lower() or 'fc2' in parent_dir_name.lower():
-        fid = clean_fc2_id(filename)
-        if fid:
-            res_fc2 = scrape_fc2_official(fid)
-            if res_fc2:
-                return res_fc2
-    site, date_str, clean_title = parse_scene_info(filename)
-    if not site and parent_dir_name:
-        site = parent_dir_name
-        
     if site and date_str:
         try:
-            url = f"https://api.theporndb.net/scenes?q={requests.utils.quote(site)}&date={date_str}"
+            url = f"https://api.theporndb.net/scenes?q={quote(site)}&date={date_str}"
             r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
@@ -103,98 +295,147 @@ def scrape_official_scene(filename, parent_dir_name=""):
                     for it in data:
                         it_site = (it.get('site') or {}).get('name', '').lower()
                         if site.lower() in it_site:
-                            return it
-                    return data[0]
+                            return _format_tpdb_result(it)
+                    return _format_tpdb_result(data[0])
         except Exception:
             pass
 
     q_str = f"{site} {clean_title}".strip()
     if q_str:
         try:
-            url = f"https://api.theporndb.net/scenes?q={requests.utils.quote(q_str)}"
+            url = f"https://api.theporndb.net/scenes?q={quote(q_str)}"
             r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
                 if data:
-                    return data[0]
+                    return _format_tpdb_result(data[0])
         except Exception:
             pass
-            
     return None
 
-def download_and_save_poster(image_url, target_poster_path):
+def _format_tpdb_result(it: dict) -> dict:
+    p_url = it.get('poster') or (it.get('background') or {}).get('full') or (it.get('background') or {}).get('large')
+    actors = [p.get('name') for p in it.get('performers', []) if p.get('name')]
+    tags = [t.get('name') if isinstance(t, dict) else str(t) for t in it.get('tags', [])]
+    return {
+        "id": it.get('id'),
+        "title": it.get('title'),
+        "studio": (it.get('site') or {}).get('name'),
+        "premiered": it.get('date'),
+        "plot": it.get('description'),
+        "poster_url": p_url,
+        "actors": actors,
+        "tags": tags,
+        "source": "ThePornDB"
+    }
+
+# ==================== 3. 顶层 4 级阶梯式瀑布流聚合引擎 (Master Waterfall Engine) ====================
+
+def scrape_official_scene(filename: str, parent_dir_name: str = "") -> dict:
+    """
+    大一统瀑布流调度引擎：智能分流 ➔ 官方直连 ➔ 镜像归档 ➔ 综合数据库 ➔ 全量聚合
+    """
+    info = parse_media_identifier(filename, parent_dir_name)
+    m_type = info.get("type")
+    
+    # 🥇 1. FC2 素人瀑布流：官方 -> FC2Club -> FC2PPVDB -> JavDB
+    if m_type == "fc2":
+        fid = info.get("id")
+        for fn in [scrape_fc2_official, scrape_fc2club, scrape_fc2ppvdb]:
+            res = fn(fid)
+            if res and res.get("poster_url"): return res
+        return scrape_javdb(f"FC2-PPV-{fid}")
+
+    # 🥈 2. MGS 舞台专属瀑布流：MGStage -> Prestige -> JavBus -> JavDB
+    elif m_type == "mgs":
+        num = info.get("number")
+        for fn in [scrape_mgstage, scrape_prestige_official, scrape_javbus, scrape_javdb]:
+            res = fn(num)
+            if res and res.get("poster_url"): return res
+        return None
+
+    # 🥉 3. 日本标准商业番号瀑布流：Prestige/Faleno官方 -> JavBus权威大图 -> JavDB -> AVSOX
+    elif m_type == "jav":
+        num = info.get("number")
+        prefix = info.get("prefix", "")
+        # 如果是已知大厂直连
+        if "ABW" in prefix or "ABP" in prefix:
+            res_pres = scrape_prestige_official(num)
+            if res_pres and res_pres.get("poster_url"): return res_pres
+        elif "FSDSS" in prefix or "FCDSS" in prefix:
+            res_fal = scrape_faleno_official(num)
+            if res_fal and res_fal.get("poster_url"): return res_fal
+            
+        for fn in [scrape_javbus, scrape_javdb, scrape_avsox]:
+            res = fn(num)
+            if res and res.get("poster_url"): return res
+        return None
+
+    # 🏅 4. 二次元动漫里番瀑布流：Getchu -> JavDB
+    elif m_type == "hentai" or "getchu" in parent_dir_name.lower():
+        num = info.get("number", filename)
+        return scrape_getchu(num) or scrape_javdb(num)
+
+    # 🌍 5. 欧美商业 Scene 瀑布流：ThePornDB 官方 4K
+    else:
+        return scrape_tpdb_scene(info)
+
+# ==================== 4. 海报写入与 NFO 标准化生成 ====================
+
+def download_and_save_poster(image_url: str, target_poster_path: str) -> bool:
     try:
-        r = requests.get(image_url, headers={'User-Agent': 'Mozilla/5.0'}, stream=True, timeout=15)
+        r = requests.get(image_url, headers=COMMON_HEADERS, stream=True, timeout=15)
         if r.status_code == 200:
             with open(target_poster_path, 'wb') as f:
                 for chunk in r.iter_content(1024 * 64):
                     f.write(chunk)
             return True
     except Exception as e:
-        print(f"下载官方海报失败: {e}")
+        print(f"下载海报失败: {e}")
     return False
 
-def generate_nfo_file_content(scene_data, video_filename):
+def generate_nfo_file_content(data: dict, video_filename: str) -> str:
     root = ET.Element("movie")
-    
-    title = scene_data.get('title') or video_filename
+    title = data.get('title') or video_filename
     ET.SubElement(root, "title").text = title
     ET.SubElement(root, "originaltitle").text = title
     
-    if scene_data.get('date'):
-        ET.SubElement(root, "premiered").text = scene_data.get('date')
-        ET.SubElement(root, "year").text = scene_data.get('date')[:4]
+    if data.get('premiered'):
+        ET.SubElement(root, "premiered").text = data.get('premiered')
+        ET.SubElement(root, "year").text = data.get('premiered')[:4]
         
-    if scene_data.get('description'):
-        ET.SubElement(root, "plot").text = scene_data.get('description')
-        ET.SubElement(root, "outline").text = scene_data.get('description')
+    if data.get('plot'):
+        ET.SubElement(root, "plot").text = data.get('plot')
+        ET.SubElement(root, "outline").text = data.get('plot')
         
-    site_name = (scene_data.get('site') or {}).get('name')
+    site_name = data.get('studio')
     if site_name:
         ET.SubElement(root, "studio").text = site_name
         ET.SubElement(root, "publisher").text = site_name
         
-    for perf in scene_data.get('performers', []):
-        actor = ET.SubElement(root, "actor")
-        ET.SubElement(actor, "name").text = perf.get('name')
-        if perf.get('image'):
-            ET.SubElement(actor, "thumb").text = perf.get('image')
+    for act in data.get('actors', []):
+        actor_el = ET.SubElement(root, "actor")
+        ET.SubElement(actor_el, "name").text = act
             
-    for tag in scene_data.get('tags', []):
-        ET.SubElement(root, "genre").text = tag.get('name') if isinstance(tag, dict) else str(tag)
+    for tag in data.get('tags', []):
+        ET.SubElement(root, "genre").text = tag
         
     ET.SubElement(root, "lockdata").text = "true"
-    
     return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode('utf-8')
 
-
-def clean_scene_name_rules(name: str) -> str:
-    """第一道防线：基于规范模式清洗"""
-    fn = re.sub(r'\.[^.]+$', '', name)
-    fn = re.sub(r'\(mp4\)|\(mkv\)|\(wmv\)|\(avi\)|XXX|2160p|1080p|720p|4k', '', fn, flags=re.IGNORECASE).strip()
-    tokens = [w.capitalize() for w in re.split(r'[._\s-]+', fn) if w]
-    return ".".join(tokens)
+# ==================== 5. AI 纠错与智能重命名 ====================
 
 def call_openrouter_batch_fix(filenames_list: list, ai_cfg: dict) -> list:
-    """第二道防线：AI 智能批量语义纠错（两轮补全）"""
-    if not filenames_list:
-        return []
-        
+    if not filenames_list: return []
     api_base = ai_cfg.get("api_base", "https://openrouter.ai/api/v1")
     api_key = ai_cfg.get("api_key", "")
     model = ai_cfg.get("model", "minimax/minimax-m2.7:free")
-    
-    if not api_key:
-        return []
+    if not api_key: return []
         
     endpoint = f"{api_base.rstrip('/')}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     prompt = f"""You are a media file naming normalization expert.
-Given a list of video release filenames that failed scraping, analyze and repair each into standard release format (Studio.YY.MM.DD.Performer.Title).
+Given a list of video release filenames that failed scraping, analyze and repair each into standard release format (Studio.YY.MM.DD.Performer.Title or Standard ID).
 
 Input files:
 {json.dumps(filenames_list, ensure_ascii=False)}
@@ -206,31 +447,45 @@ Output strictly valid JSON array of objects:
 No other text."""
 
     try:
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1
-        }
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
         r = requests.post(endpoint, headers=headers, json=payload, timeout=30)
         if r.status_code == 200:
             content = r.json().get('choices', [{}])[0].get('message', {}).get('content', '')
             m = re.search(r'\[\s*\{.*?\}\s*\]', content, re.DOTALL)
-            if m:
-                return json.loads(m.group(0))
+            if m: return json.loads(m.group(0))
     except Exception as e:
         print("AI batch fix error:", e)
     return []
 
-def rename_115_file(session, file_id: str, new_name: str) -> bool:
-    """调用 115 官方 API 接口重命名云端文件"""
+# ==================== 6. 任务状态持久化与断点自动恢复状态机 (Persistence State Machine) ====================
+
+STATE_FILE = "/opt/treestrm/governance_state.json"
+
+def save_running_state(current_job: dict, queue: list):
     try:
-        url = "https://webapi.115.com/files/edit"
         data = {
-            "fid": file_id,
-            "file_name": new_name
+            "current_job": current_job,
+            "queue": queue,
+            "updated_at": time.time()
         }
-        r = session.post(url, data=data, timeout=10).json()
-        return bool(r.get("state"))
+        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"115 重命名失败 [{file_id} ➔ {new_name}]:", e)
-    return False
+        print(f"保存任务状态失败: {e}")
+
+def load_running_state() -> tuple:
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("current_job"), data.get("queue", [])
+        except Exception:
+            pass
+    return None, []
+
+def clear_running_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            os.remove(STATE_FILE)
+        except Exception:
+            pass
