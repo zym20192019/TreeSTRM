@@ -504,6 +504,7 @@
                             </td>
                             <td class="px-6 py-4 font-mono font-medium text-slate-200">
                                 ${cat.video_count.toLocaleString()} <span class="text-xs text-slate-400">部</span>
+                                ${cat.sub_count > 0 ? `<span class="inline-flex items-center ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-500/10 text-indigo-300 border border-indigo-500/20" title="包含 ${cat.sub_count} 个外挂字幕 STRM (无需抽封面)">+${cat.sub_count} 字幕</span>` : ''}
                             </td>
                             <td class="px-6 py-4">
                                 <div class="flex items-center space-x-2">

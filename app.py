@@ -1042,11 +1042,18 @@ def get_categories():
     for d in subdirs:
         p = os.path.join(root_dir, d)
         v_count = 0
+        sub_count = 0
         c_count = 0
         n_count = 0
         for root, _, files in os.walk(p):
             for f in files:
-                if f.endswith('.strm'): v_count += 1
+                if f.endswith('.strm'):
+                    m = re.search(r'\(([^)]+)\)\.strm$', f)
+                    ext = ('.' + m.group(1).lower()) if m else ''
+                    if ext in COMPREHENSIVE_SUBTITLE_EXTS:
+                        sub_count += 1
+                    else:
+                        v_count += 1
                 elif 'poster' in f: c_count += 1
                 elif f.endswith('.nfo'): n_count += 1
                 
@@ -1066,6 +1073,7 @@ def get_categories():
             "name": d,
             "path": p,
             "video_count": v_count,
+            "sub_count": sub_count,
             "cover_count": c_count,
             "nfo_count": n_count,
             "is_scraped": is_scraped,
