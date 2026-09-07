@@ -166,7 +166,6 @@ def scrape_fc2ppvdb(fc2_id: str) -> dict:
 
 
 def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
-    """针对官方 404 下架的 FC2 绝版条目，进行海外高存活镜像库与归档深度打捞，并补齐原生日文真名"""
     mirrors = [
         f"https://fc2jav.com/fc2-ppv-{fc2_id}/",
         f"https://maxjav.com/{fc2_id}/"
@@ -181,17 +180,12 @@ def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
                     if src and (fc2_id in src or 'poster' in src or 'cover' in src):
                         if src.startswith('//'): src = 'https:' + src
                         title = soup.find('h1').get_text(strip=True) if soup.find('h1') else f"FC2-PPV-{fc2_id}"
-                        
-                        # 核心打捞升级：如果海外镜像只给出了机翻英文名，直接从原生快照引擎精准打捞日文原版真名
-                        jp_title = search_fc2_japanese_title_fallback(fc2_id)
-                        final_title = jp_title if jp_title else title
-                        
                         return {
                             "id": f"FC2-PPV-{fc2_id}",
-                            "title": final_title,
+                            "title": title,
                             "studio": "FC2-PPV",
                             "premiered": None,
-                            "plot": final_title,
+                            "plot": title,
                             "poster_url": src,
                             "actors": [],
                             "tags": ["FC2", "PPV", "绝版镜像"],
@@ -200,6 +194,30 @@ def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
         except Exception:
             pass
     return None
+
+def scrape_fc2_snapshot_matrix(fc2_id: str) -> dict:
+    """
+    🥇 绝版前置打捞器：优先利用全网快照打捞完整日文片名与剧情，再结合海外镜像下载 100% 官方原画海报
+    """
+    jp_title = search_fc2_japanese_title_fallback(fc2_id)
+    mirror_res = scrape_fc2_mirrors_deep(fc2_id)
+    poster_url = mirror_res.get("poster_url") if mirror_res else None
+    
+    if jp_title or poster_url:
+        final_title = jp_title if jp_title else (mirror_res.get("title") if mirror_res else f"FC2-PPV-{fc2_id}")
+        return {
+            "id": f"FC2-PPV-{fc2_id}",
+            "title": final_title,
+            "studio": "FC2-PPV",
+            "premiered": None,
+            "plot": final_title,
+            "poster_url": poster_url,
+            "actors": [],
+            "tags": ["FC2", "PPV", "绝版原画"],
+            "source": "FC2 Snapshot + Mirror"
+        }
+    return None
+
 
 def search_fc2_japanese_title_fallback(fc2_id: str) -> str:
     """利用原生网络快照索引打捞 FC2 下架绝版作品的原汁原味日文官方真名"""
@@ -518,13 +536,14 @@ def scrape_official_scene(filename: str, parent_dir_name: str = "") -> dict:
     info = parse_media_identifier(filename, parent_dir_name)
     m_type = info.get("type")
     
-    # 🥇 1. FC2 素人瀑布流：官方 -> FC2Club -> FC2PPVDB -> JavDB
+    # 🥇 1. FC2 素人瀑布流：官方 -> 搜索引擎全网快照(日文真名+剧情) -> 海外镜像库 -> FC2Club -> JavDB
     if m_type == "fc2":
         fid = info.get("id")
-        for fn in [scrape_fc2_official, scrape_fc2club, scrape_fc2ppvdb, scrape_fc2_mirrors_deep]:
+        for fn in [scrape_fc2_official, scrape_fc2_snapshot_matrix, scrape_fc2club, scrape_fc2ppvdb, scrape_fc2_mirrors_deep]:
             res = fn(fid)
             if res and res.get("poster_url"): return res
         return scrape_javdb(f"FC2-PPV-{fid}")
+
 
     # 🥈 2. MGS 舞台专属瀑布流：MGStage -> Prestige -> JavBus -> JavDB
     elif m_type == "mgs":
