@@ -1301,12 +1301,19 @@ def get_categories():
                     if ext in COMPREHENSIVE_SUBTITLE_EXTS:
                         sub_count += 1
                     else:
-                        v_set.add(os.path.join(root, f[:-5]))
+                        clean_base = re.sub(r'\(\w+\)\.strm$', '', f)
+                        if clean_base == f:
+                            clean_base = f[:-5]
+                        v_set.add(os.path.join(root, clean_base.rstrip('.')))
                 elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp') or f.endswith('-poster.gif'):
                     m_base = re.sub(r'-poster\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
-                    c_set.add(os.path.join(root, m_base))
+                    clean_m_base = re.sub(r'\(\w+\)$', '', m_base).rstrip('.')
+                    c_set.add(os.path.join(root, clean_m_base))
                 elif f.endswith('.nfo'):
-                    n_set.add(os.path.join(root, f[:-4]))
+                    clean_nfo = re.sub(r'\(\w+\)\.nfo$', '', f)
+                    if clean_nfo == f:
+                        clean_nfo = f[:-4]
+                    n_set.add(os.path.join(root, clean_nfo.rstrip('.')))
         
         v_count = len(v_set)
         c_count = len(c_set.intersection(v_set))
