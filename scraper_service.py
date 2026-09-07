@@ -285,6 +285,7 @@ def scrape_tpdb_scene(info: dict) -> dict:
     date_str = info.get("date")
     clean_title = info.get("clean_title", "")
     
+    # 策略 1: 厂牌 + 日期精确匹配
     if site and date_str:
         try:
             url = f"https://api.theporndb.net/scenes?q={quote(site)}&date={date_str}"
@@ -300,6 +301,7 @@ def scrape_tpdb_scene(info: dict) -> dict:
         except Exception:
             pass
 
+    # 策略 2: 厂牌 + 标题/演职员
     q_str = f"{site} {clean_title}".strip()
     if q_str:
         try:
@@ -311,6 +313,32 @@ def scrape_tpdb_scene(info: dict) -> dict:
                     return _format_tpdb_result(data[0])
         except Exception:
             pass
+
+    # 策略 3: 纯演职员/标题去杂质深度模糊匹配 (专攻合辑与不同发售日期切片)
+    pure_actors = re.sub(r'\b(and|sd|hd|mp4|ktr|kleenex|xxx|4k|720p|1080p)\b', '', clean_title, flags=re.IGNORECASE)
+    pure_actors = re.sub(r'[\.\s_\-]+', ' ', pure_actors).strip()
+    if pure_actors and len(pure_actors) > 3:
+        try:
+            url = f"https://api.theporndb.net/scenes?q={quote(pure_actors)}"
+            r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
+            if r.status_code == 200:
+                data = r.json().get('data', [])
+                if data:
+                    if site:
+                        for it in data:
+                            it_site = (it.get('site') or {}).get('name', '').lower()
+                            if site.lower() in it_site or it_site in site.lower():
+                                return _format_tpdb_result(it)
+                    return _format_tpdb_result(data[0])
+        except Exception:
+            pass
+
+    # 策略 4: JavDB 跨库兜底
+    if pure_actors:
+        jav_res = scrape_javdb(pure_actors)
+        if jav_res and jav_res.get("poster_url"):
+            return jav_res
+
     return None
 
 def _format_tpdb_result(it: dict) -> dict:
