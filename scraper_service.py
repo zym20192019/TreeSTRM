@@ -101,13 +101,21 @@ def scrape_fc2_official(fc2_id: str) -> dict:
     headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "age_check=1; adult=1; contents_adult=1;"}
     try:
         r = requests.get(url, headers=headers, timeout=8)
-        if r.status_code == 200 and "notfound" not in r.text and "icon_404bg" not in r.text:
+        if r.status_code == 200:
+            if any(bad in r.text for bad in ["notfound", "icon_404bg", "お探しの商品が見つかりませんでした", "404 Not Found"]):
+                return None
             soup = BeautifulSoup(r.text, 'html.parser')
             title_tag = soup.find('div', attrs={'data-section': 'userInfo'})
             title = title_tag.find('h3').get_text(strip=True) if title_tag and title_tag.find('h3') else None
             if not title:
                 h2 = soup.find('h2')
-                title = h2.get_text(strip=True) if h2 else f"FC2-PPV-{fc2_id}"
+                t_cand = h2.get_text(strip=True) if h2 else ""
+                if t_cand and "サービス情報" not in t_cand and "FC2" not in t_cand:
+                    title = t_cand
+                else:
+                    title = f"FC2-PPV-{fc2_id}"
+            if not title or "サービス情報" in title:
+                return None
                 
             poster = None
             main_thumb = soup.find('div', class_='items_article_MainitemThumb')
