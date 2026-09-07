@@ -149,6 +149,38 @@ def scrape_fc2ppvdb(fc2_id: str) -> dict:
     return None
 
 
+
+def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
+    """针对官方 404 下架的 FC2 绝版条目，进行海外高存活镜像库与归档深度打捞"""
+    mirrors = [
+        f"https://fc2jav.com/fc2-ppv-{fc2_id}/",
+        f"https://maxjav.com/{fc2_id}/"
+    ]
+    for url in mirrors:
+        try:
+            r = requests.get(url, headers=COMMON_HEADERS, timeout=6)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, 'html.parser')
+                imgs = [img.get('src') or img.get('data-src') or img.get('data-original') for img in soup.find_all('img')]
+                for src in imgs:
+                    if src and (fc2_id in src or 'poster' in src or 'cover' in src):
+                        if src.startswith('//'): src = 'https:' + src
+                        title = soup.find('h1').get_text(strip=True) if soup.find('h1') else f"FC2-PPV-{fc2_id}"
+                        return {
+                            "id": f"FC2-PPV-{fc2_id}",
+                            "title": title,
+                            "studio": "FC2-PPV",
+                            "premiered": None,
+                            "plot": title,
+                            "poster_url": src,
+                            "actors": [],
+                            "tags": ["FC2", "PPV", "绝版镜像"],
+                            "source": "FC2 Extended Mirror"
+                        }
+        except Exception:
+            pass
+    return None
+
 def scrape_caribbeancom(number: str) -> dict:
     url = f"https://www.caribbeancom.com/moviepages/{number}/index.html"
     headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "age_check=1"}
@@ -427,7 +459,7 @@ def scrape_official_scene(filename: str, parent_dir_name: str = "") -> dict:
     # 🥇 1. FC2 素人瀑布流：官方 -> FC2Club -> FC2PPVDB -> JavDB
     if m_type == "fc2":
         fid = info.get("id")
-        for fn in [scrape_fc2_official, scrape_fc2club, scrape_fc2ppvdb]:
+        for fn in [scrape_fc2_official, scrape_fc2club, scrape_fc2ppvdb, scrape_fc2_mirrors_deep]:
             res = fn(fid)
             if res and res.get("poster_url"): return res
         return scrape_javdb(f"FC2-PPV-{fid}")
