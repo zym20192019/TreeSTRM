@@ -1113,7 +1113,7 @@ def trigger_official_scrape(category: str, max_items: int = 0):
         return {"status": "error", "message": "专区路径不存在"}
         
     def _scrape_task():
-        push_log(f"======== 🎬 启动专区【{category}】ThePornDB 官方原画刮削流水线 ========")
+        push_log(f"======== 🎬 启动专区【{category}】全源官方原画瀑布流刮削流水线 ========")
         cookie = cfg.get("cookie", "")
         session = create_115_session(cookie) if cookie else None
         ai_cfg = cfg.get("ai_governance", {})

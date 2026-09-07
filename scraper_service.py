@@ -44,6 +44,10 @@ def parse_media_identifier(filename: str, parent_dir_name: str = "") -> dict:
         return {"type": "mgs", "number": f"{prefix.upper()}-{num}", "prefix": prefix.upper(), "num": num}
 
     # 3. 检查无码四大厂 (Caribbean, Heyzo, 1Pondo, Tokyo-Hot)
+    m_1pon = re.search(r'(?:1pon|1pondo)[-_]?(\d{6})[_-](\d{3})', fn, re.IGNORECASE)
+    if m_1pon:
+        return {"type": "uncensored", "studio": "1Pondo", "number": f"{m_1pon.group(1)}_{m_1pon.group(2)}"}
+
     m_heyzo = re.search(r'HEYZO[-_]?(\d{4})', fn, re.IGNORECASE)
     if m_heyzo:
         return {"type": "uncensored", "studio": "HEYZO", "number": f"HEYZO-{m_heyzo.group(1)}"}
@@ -140,6 +144,37 @@ def scrape_fc2ppvdb(fc2_id: str) -> dict:
             img = soup.find('div', class_='article-image').find('img') if soup.find('div', class_='article-image') else None
             poster = img.get('src') if img else None
             return {"id": f"FC2-PPV-{fc2_id}", "title": title, "studio": "FC2-PPV", "premiered": None, "plot": title, "poster_url": poster, "actors": [], "tags": ["FC2", "PPV"], "source": "FC2PPVDB"}
+    except Exception:
+        pass
+    return None
+
+
+def scrape_caribbeancom(number: str) -> dict:
+    url = f"https://www.caribbeancom.com/moviepages/{number}/index.html"
+    headers = {"User-Agent": COMMON_HEADERS["User-Agent"], "Cookie": "age_check=1"}
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            title = soup.find('h1').get_text(strip=True) if soup.find('h1') else number
+            poster = f"https://www.caribbeancom.com/moviepages/{number}/images/l_l.jpg"
+            actors = [a.get_text(strip=True) for a in soup.find_all('a', href=re.compile(r'/actress/'))]
+            return {"id": number, "title": title, "studio": "Caribbeancom", "premiered": None, "plot": title, "poster_url": poster, "actors": actors, "tags": ["无码", "加勒比"], "source": "Caribbeancom Official"}
+    except Exception:
+        pass
+    return None
+
+def scrape_1pondo(number: str) -> dict:
+    url = f"https://www.1pondo.tv/movies/{number}/"
+    headers = {"User-Agent": COMMON_HEADERS["User-Agent"]}
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            title = soup.find('h1').get_text(strip=True) if soup.find('h1') else number
+            poster = f"https://www.1pondo.tv/assets/sample/{number}/str.jpg"
+            actors = [a.get_text(strip=True) for a in soup.find_all('a', href=re.compile(r'/actress/'))]
+            return {"id": number, "title": title, "studio": "1Pondo", "premiered": None, "plot": title, "poster_url": poster, "actors": actors, "tags": ["无码", "一本道"], "source": "1Pondo Official"}
     except Exception:
         pass
     return None
@@ -285,23 +320,46 @@ def scrape_tpdb_scene(info: dict) -> dict:
     date_str = info.get("date")
     clean_title = info.get("clean_title", "")
     
-    # 策略 1: 厂牌 + 日期精确匹配
+    # 厂牌同义词标准化映射
+    aliases = {
+        "tsma": "teensexmania", "teensexmania": "teensexmania",
+        "itc": "inthecrack", "inthecrack": "inthecrack",
+        "girlfriendsfilms": "girlfriends", "gff": "girlfriends",
+        "blackedraw": "blacked", "blacked": "blacked",
+        "vixen": "vixen", "deeper": "deeper", "tushy": "tushy", "tushyraw": "tushy",
+        "loveherfeet": "loveher", "loveherfilms": "loveher",
+        "familyxxx": "family", "trueanal": "trueanal", "fit18": "fit18",
+        "myfamilypies": "myfamilypies", "cum4k": "cum4k",
+        "lcd": "littlecaprice", "littlecapricepov": "littlecaprice",
+        "dpg": "digitalplayground", "manyvids": "manyvids",
+        "bangingbeauties": "bangingbeauties", "jlmf": "jeshbyjesh",
+        "bellesafilms": "bellesa", "jeshbyjesh": "jeshbyjesh",
+        "devilsfilm": "devilsfilm", "hegre": "hegre", "hart": "hegre"
+    }
+    
+    def _is_studio_matched(candidate_site: str, target_site: str) -> bool:
+        if not target_site: return True
+        c_norm = re.sub(r'[^a-zA-Z0-9]', '', candidate_site).lower()
+        t_norm = re.sub(r'[^a-zA-Z0-9]', '', target_site).lower()
+        c_mapped = aliases.get(c_norm, c_norm)
+        t_mapped = aliases.get(t_norm, t_norm)
+        return (t_mapped in c_mapped or c_mapped in t_mapped)
+
+    # 策略 1: 厂牌 + 日期精确匹配（必须严格匹配厂牌）
     if site and date_str:
         try:
             url = f"https://api.theporndb.net/scenes?q={quote(site)}&date={date_str}"
             r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
-                if data:
-                    for it in data:
-                        it_site = (it.get('site') or {}).get('name', '').lower()
-                        if site.lower() in it_site:
-                            return _format_tpdb_result(it)
-                    return _format_tpdb_result(data[0])
+                for it in data:
+                    it_site = (it.get('site') or {}).get('name', '')
+                    if _is_studio_matched(it_site, site):
+                        return _format_tpdb_result(it)
         except Exception:
             pass
 
-    # 策略 2: 厂牌 + 标题/演职员
+    # 策略 2: 厂牌 + 标题/演职员（必须严格匹配厂牌）
     q_str = f"{site} {clean_title}".strip()
     if q_str:
         try:
@@ -309,12 +367,14 @@ def scrape_tpdb_scene(info: dict) -> dict:
             r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
-                if data:
-                    return _format_tpdb_result(data[0])
+                for it in data:
+                    it_site = (it.get('site') or {}).get('name', '')
+                    if _is_studio_matched(it_site, site):
+                        return _format_tpdb_result(it)
         except Exception:
             pass
 
-    # 策略 3: 纯演职员/标题去杂质深度模糊匹配 (专攻合辑与不同发售日期切片)
+    # 策略 3: 纯演职员搜索（【铁律】：必须同时命中原厂牌，绝不允许跨厂牌漂移！）
     pure_actors = re.sub(r'\b(and|sd|hd|mp4|ktr|kleenex|xxx|4k|720p|1080p)\b', '', clean_title, flags=re.IGNORECASE)
     pure_actors = re.sub(r'[\.\s_\-]+', ' ', pure_actors).strip()
     if pure_actors and len(pure_actors) > 3:
@@ -323,22 +383,20 @@ def scrape_tpdb_scene(info: dict) -> dict:
             r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
-                if data:
-                    if site:
-                        for it in data:
-                            it_site = (it.get('site') or {}).get('name', '').lower()
-                            if site.lower() in it_site or it_site in site.lower():
-                                return _format_tpdb_result(it)
-                    return _format_tpdb_result(data[0])
+                for it in data:
+                    it_site = (it.get('site') or {}).get('name', '')
+                    if _is_studio_matched(it_site, site):
+                        return _format_tpdb_result(it)
         except Exception:
             pass
 
-    # 策略 4: JavDB 跨库兜底
-    if pure_actors:
-        jav_res = scrape_javdb(pure_actors)
+    # 策略 4: JavDB 兜底（同样必须包含厂牌关键字）
+    if pure_actors and site:
+        jav_res = scrape_javdb(f"{site} {pure_actors}")
         if jav_res and jav_res.get("poster_url"):
             return jav_res
 
+    # 都不严格匹配则返回 None，由 CD2 黄金位抽帧保底，绝不误挂假封面！
     return None
 
 def _format_tpdb_result(it: dict) -> dict:
@@ -398,6 +456,18 @@ def scrape_official_scene(filename: str, parent_dir_name: str = "") -> dict:
             res = fn(num)
             if res and res.get("poster_url"): return res
         return None
+
+    # 🏅 3.5 无码四大厂直连瀑布流：Caribbeancom / 1Pondo -> JavDB
+    elif m_type == "uncensored":
+        studio = info.get("studio")
+        num = info.get("number")
+        if studio == "Caribbeancom":
+            res = scrape_caribbeancom(num)
+            if res and res.get("poster_url"): return res
+        elif studio == "1Pondo":
+            res = scrape_1pondo(num)
+            if res and res.get("poster_url"): return res
+        return scrape_javdb(num)
 
     # 🏅 4. 二次元动漫里番瀑布流：Getchu -> JavDB
     elif m_type == "hentai" or "getchu" in parent_dir_name.lower():
