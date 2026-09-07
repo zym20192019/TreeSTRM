@@ -1294,8 +1294,8 @@ def get_categories():
             for f in files:
                 if f.endswith('.strm'):
                     v_set.add(os.path.join(root, f[:-5]))
-                elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp') or f.endswith('-poster.gif'):
-                    m_base = re.sub(r'-poster\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
+                elif re.search(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', f, re.IGNORECASE):
+                    m_base = re.sub(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
                     c_set.add(os.path.join(root, m_base))
                 elif f.endswith('.nfo'):
                     n_set.add(os.path.join(root, f[:-4]))
