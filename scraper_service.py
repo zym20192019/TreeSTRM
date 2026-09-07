@@ -166,7 +166,7 @@ def scrape_fc2ppvdb(fc2_id: str) -> dict:
 
 
 def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
-    """针对官方 404 下架的 FC2 绝版条目，进行海外高存活镜像库与归档深度打捞"""
+    """针对官方 404 下架的 FC2 绝版条目，进行海外高存活镜像库与归档深度打捞，并补齐原生日文真名"""
     mirrors = [
         f"https://fc2jav.com/fc2-ppv-{fc2_id}/",
         f"https://maxjav.com/{fc2_id}/"
@@ -181,12 +181,17 @@ def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
                     if src and (fc2_id in src or 'poster' in src or 'cover' in src):
                         if src.startswith('//'): src = 'https:' + src
                         title = soup.find('h1').get_text(strip=True) if soup.find('h1') else f"FC2-PPV-{fc2_id}"
+                        
+                        # 核心打捞升级：如果海外镜像只给出了机翻英文名，直接从原生快照引擎精准打捞日文原版真名
+                        jp_title = search_fc2_japanese_title_fallback(fc2_id)
+                        final_title = jp_title if jp_title else title
+                        
                         return {
                             "id": f"FC2-PPV-{fc2_id}",
-                            "title": title,
+                            "title": final_title,
                             "studio": "FC2-PPV",
                             "premiered": None,
-                            "plot": title,
+                            "plot": final_title,
                             "poster_url": src,
                             "actors": [],
                             "tags": ["FC2", "PPV", "绝版镜像"],
@@ -195,6 +200,35 @@ def scrape_fc2_mirrors_deep(fc2_id: str) -> dict:
         except Exception:
             pass
     return None
+
+def search_fc2_japanese_title_fallback(fc2_id: str) -> str:
+    """利用原生网络快照索引打捞 FC2 下架绝版作品的原汁原味日文官方真名"""
+    try:
+        query = f"FC2-PPV-{fc2_id}"
+        url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        r = requests.post(url, data={'q': query}, headers=headers, timeout=8)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for res in soup.find_all('div', class_='result'):
+                snippet_el = res.find('a', class_='result__snippet')
+                title_el = res.find('a', class_='result__title')
+                text = ""
+                if title_el: text += title_el.get_text(strip=True) + " "
+                if snippet_el: text += snippet_el.get_text(strip=True)
+                
+                has_kana = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF]', text))
+                if fc2_id in text and has_kana:
+                    m = re.search(rf'(?:FC2[\s\-_]*PPV[\s\-_]*{fc2_id}|FC2[\s\-_]*{fc2_id})[\s:：【]*(.+?)(?:\.\.\.|\n|$)', text)
+                    if m:
+                        raw_t = m.group(1).strip()
+                        raw_t = re.sub(r'[\-_|](?:在线|高清|播放|无码).*$', '', raw_t).strip()
+                        if len(raw_t) > 8:
+                            return f"FC2-PPV-{fc2_id} {raw_t}"
+    except Exception:
+        pass
+    return ""
+
 
 def scrape_caribbeancom(number: str) -> dict:
     url = f"https://www.caribbeancom.com/moviepages/{number}/index.html"
