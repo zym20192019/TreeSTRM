@@ -1131,19 +1131,24 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                 poster_path = os.path.join(root, f"{base_fn}-poster.jpg")
                 nfo_path = os.path.join(root, f"{base_fn}.nfo")
                 
-                if not os.path.exists(poster_path) and not os.path.exists(os.path.join(root, f"{base_fn}-poster.jpeg")):
+                need_poster = not os.path.exists(poster_path) and not os.path.exists(os.path.join(root, f"{base_fn}-poster.jpeg"))
+                need_nfo = not os.path.exists(nfo_path)
+                
+                if need_poster or need_nfo:
                     scene = scraper_service.scrape_official_scene(base_fn, parent_dir)
                     if scene:
-                        p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
-                        if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
-                            poster_count += 1
-                            push_log(f"📸 [第1轮原画成功] {base_fn} ➔ [{scene.get('title')}]")
-                            
-                        if not os.path.exists(nfo_path):
+                        if need_poster:
+                            p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
+                            if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
+                                poster_count += 1
+                                push_log(f"📸 [官方原画补齐] {base_fn} ➔ [{scene.get('title')}]")
+                                
+                        if need_nfo:
                             nfo_content = scraper_service.generate_nfo_file_content(scene, base_fn)
                             with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
                                 nfo_f.write(nfo_content)
                             scraped_count += 1
+                            push_log(f"📝 [正版NFO补齐] {base_fn} ➔ [{scene.get('title')}]")
                     else:
                         failed_items.append((root, sf, base_fn, parent_dir))
                     time.sleep(1.0)
