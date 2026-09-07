@@ -495,7 +495,8 @@ def sync_strms_pure_1to1(
         dirname = os.path.dirname(rel_path)
         filename = os.path.basename(rel_path)
         basename, ext_with_dot = os.path.splitext(filename)
-        strm_filename = f"{basename}.strm"
+        clean_basename = re.sub(r'\(\w+\)$', '', basename).rstrip('. ')
+        strm_filename = f"{clean_basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
         content = f"{strm_prefix}/{rel_path.lstrip('/')}"
         expected_strms[target_path] = content
@@ -505,8 +506,9 @@ def sync_strms_pure_1to1(
         filename = os.path.basename(rel_path)
         basename, ext_with_dot = os.path.splitext(filename)
         ext = ext_with_dot.lstrip('.')
+        clean_basename = re.sub(r'\(\w+\)$', '', basename).rstrip('. ')
         # 字幕保留原始扩展名格式，如 xxx.zh-CN.srt 或 xxx.srt
-        strm_filename = f"{basename}.{ext}" if ext in ['srt', 'ass', 'vtt', 'sub'] else f"{basename}.strm"
+        strm_filename = f"{clean_basename}.{ext}" if ext in ['srt', 'ass', 'vtt', 'sub'] else f"{clean_basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
         content = f"{strm_prefix}/{rel_path.lstrip('/')}"
         expected_strms[target_path] = content
