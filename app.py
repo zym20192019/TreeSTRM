@@ -432,48 +432,8 @@ def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: i
 
 # ----------------- CD2 本地通道 Fast Seek 抽帧核心 (0 验证码、0 拦截、0.9s 秒级出图) -----------------
 
-def extract_cover_by_cd2(target_path: str, poster_path: str, thumb_path: str, seek_sec: int = 20) -> bool:
-    """直接走 CD2 本地挂载 Fast Seek (智能定位 45% 正片精彩画面)，0 验证码，0.9s 秒级出图！"""
-    try:
-        host_target = target_path
-        if host_target.startswith('/movies/'):
-            host_target = '/Movies/' + host_target[8:]
-            
-        if not os.path.exists(host_target):
-            return False
-            
-        # 优先 seek 到指定正片黄金时间点 (例如 45% 处)
-        s_time = time.strftime('%H:%M:%S', time.gmtime(seek_sec)) if seek_sec > 0 else '00:00:05'
-        cmd = [
-            'ffmpeg', '-y',
-            '-ss', s_time,
-            '-i', host_target,
-            '-vframes', '1',
-            '-vf', 'scale=min(1080\\,iw):-2',
-            '-q:v', '3',
-            poster_path
-        ]
-        subprocess.run(cmd, capture_output=True, timeout=15)
-        
-        # 若超长 seek 失败 (例如超短视频/动图短片)，自适应回退到 00:00:00.5 首帧处保底
-        if not os.path.exists(poster_path) or os.path.getsize(poster_path) < 1000:
-            cmd_fallback = [
-                'ffmpeg', '-y',
-                '-ss', '00:00:00.5',
-                '-i', host_target,
-                '-vframes', '1',
-                '-vf', 'scale=min(1080\\,iw):-2',
-                '-q:v', '3',
-                poster_path
-            ]
-            subprocess.run(cmd_fallback, capture_output=True, timeout=15)
-            
-        if os.path.exists(poster_path) and os.path.getsize(poster_path) > 1000:
-            subprocess.run(['cp', poster_path, thumb_path], capture_output=True)
-            return True
-        return False
-    except Exception:
-        return False
+from engine.cd2_extractor import extract_cover_by_cd2
+
 
 # ----------------- 全量目录树 STRM 极速生成 (独立模块) -----------------
 
@@ -810,6 +770,11 @@ def process_single_category_job(job: dict):
     done_msg = f"🎉 专区【{category_name}】CD2 无风控治理圆满完成！共补齐 NFO: {gov_progress['nfos_generated']} 个，补齐封面: {gov_progress['covers_extracted']} 张！耗时: {gov_progress['elapsed']}秒"
     push_log(done_msg)
     send_telegram_alert(f"✅ [TreeSTRM 完成通知]\n{done_msg}")
+    try:
+        from services.emby_client import EmbyClient
+        EmbyClient().trigger_category_refresh(category_name)
+    except Exception:
+        pass
     current_running_job = None
 
 def queue_worker_loop():
@@ -834,50 +799,8 @@ threading.Thread(target=queue_worker_loop, daemon=True).start()
 
 # ----------------- 单独清理文件夹内失效元数据核心 -----------------
 
-def clean_orphan_metadata_for_category(category_name: str) -> dict:
-    cfg = load_config()
-    target_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人", category_name)
-    if not os.path.exists(target_dir):
-        return {"deleted_nfo": 0, "deleted_posters": 0, "deleted_thumbs": 0}
-        
-    push_log(f"======== 🧹 开始对专区【{category_name}】执行孤立失效元数据清理 ========")
-    del_nfo = 0
-    del_poster = 0
-    del_thumb = 0
-    
-    for root, dirs, files in os.walk(target_dir):
-        strms = set()
-        for f in files:
-            if f.endswith('.strm'):
-                strms.add(f[:-5])
-                
-        for f in files:
-            p = os.path.join(root, f)
-            if f.endswith('.nfo'):
-                base = f[:-4]
-                if base not in strms:
-                    try:
-                        os.remove(p)
-                        del_nfo += 1
-                    except Exception: pass
-            elif f.endswith('-poster.jpg'):
-                base = f[:-11]
-                if base not in strms:
-                    try:
-                        os.remove(p)
-                        del_poster += 1
-                    except Exception: pass
-            elif f.endswith('-thumb.jpg'):
-                base = f[:-10]
-                if base not in strms:
-                    try:
-                        os.remove(p)
-                        del_thumb += 1
-                    except Exception: pass
-                    
-    total_cleaned = del_nfo + del_poster + del_thumb
-    push_log(f"✅ 专区【{category_name}】失效元数据清理完毕！共删除孤立文件: {total_cleaned} 个 (NFO: -{del_nfo}, 海报: -{del_poster}, 缩略图: -{del_thumb})")
-    return {"deleted_nfo": del_nfo, "deleted_posters": del_poster, "deleted_thumbs": del_thumb, "total": total_cleaned}
+from engine.cleaner import clean_orphan_metadata_for_category
+
 
 # ----------------- FastAPI Web 服务 -----------------
 
@@ -1159,6 +1082,11 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                         break
 
         push_log(f"🎉 专区【{category}】官方瀑布流刮削完成！成功补齐海报: {poster_count} 张，补齐 NFO: {scraped_count} 个。共有 {len(failed_items)} 部未直接命中。")
+        try:
+            from services.emby_client import EmbyClient
+            EmbyClient().trigger_category_refresh(category)
+        except Exception:
+            pass
         
     threading.Thread(target=_scrape_task, daemon=True).start()
     return {"status": "started", "message": f"已启动专区【{category}】官方瀑布流刮削流水线！"}
