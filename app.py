@@ -494,9 +494,8 @@ def sync_strms_pure_1to1(
     for rel_path in video_paths:
         dirname = os.path.dirname(rel_path)
         filename = os.path.basename(rel_path)
-        basename, ext_with_dot = os.path.splitext(filename)
-        clean_basename = re.sub(r'\(\w+\)$', '', basename).rstrip('. ')
-        strm_filename = f"{clean_basename}.strm"
+        basename, _ = os.path.splitext(filename)
+        strm_filename = f"{basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
         content = f"{strm_prefix}/{rel_path.lstrip('/')}"
         expected_strms[target_path] = content
@@ -504,12 +503,8 @@ def sync_strms_pure_1to1(
     for rel_path in sub_paths:
         dirname = os.path.dirname(rel_path)
         filename = os.path.basename(rel_path)
-        basename, ext_with_dot = os.path.splitext(filename)
-        ext = ext_with_dot.lstrip('.')
-        clean_basename = re.sub(r'\(\w+\)$', '', basename).rstrip('. ')
-        # 字幕保留原始扩展名格式，如 xxx.zh-CN.srt 或 xxx.srt
-        strm_filename = f"{clean_basename}.{ext}" if ext in ['srt', 'ass', 'vtt', 'sub'] else f"{clean_basename}.strm"
-        target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
+        # 字幕文件直接保持原文件名
+        target_path = os.path.join(output_dir, dirname, filename) if dirname else os.path.join(output_dir, filename)
         content = f"{strm_prefix}/{rel_path.lstrip('/')}"
         expected_strms[target_path] = content
 
@@ -1298,24 +1293,14 @@ def get_categories():
         for root, _, files in os.walk(p):
             for f in files:
                 if f.endswith('.strm'):
-                    m = re.search(r'\(([^)]+)\)\.strm$', f)
-                    ext = ('.' + m.group(1).lower()) if m else ''
-                    if ext in COMPREHENSIVE_SUBTITLE_EXTS:
-                        sub_count += 1
-                    else:
-                        clean_base = re.sub(r'\(\w+\)\.strm$', '', f)
-                        if clean_base == f:
-                            clean_base = f[:-5]
-                        v_set.add(os.path.join(root, clean_base.rstrip('.')))
+                    v_set.add(os.path.join(root, f[:-5]))
                 elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp') or f.endswith('-poster.gif'):
                     m_base = re.sub(r'-poster\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
-                    clean_m_base = re.sub(r'\(\w+\)$', '', m_base).rstrip('.')
-                    c_set.add(os.path.join(root, clean_m_base))
+                    c_set.add(os.path.join(root, m_base))
                 elif f.endswith('.nfo'):
-                    clean_nfo = re.sub(r'\(\w+\)\.nfo$', '', f)
-                    if clean_nfo == f:
-                        clean_nfo = f[:-4]
-                    n_set.add(os.path.join(root, clean_nfo.rstrip('.')))
+                    n_set.add(os.path.join(root, f[:-4]))
+                elif any(f.endswith(ext) for ext in COMPREHENSIVE_SUBTITLE_EXTS):
+                    sub_count += 1
         
         v_count = len(v_set)
         c_count = len(c_set.intersection(v_set))
