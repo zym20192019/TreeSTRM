@@ -1153,50 +1153,10 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                     if max_items > 0 and (poster_count + scraped_count) >= max_items:
                         break
 
-        push_log(f"📊 第 1 轮刮削结束：成功补齐 {poster_count} 张海报，{scraped_count} 个 NFO。共有 {len(failed_items)} 部未直接命中！")
-        
-        # ----------------- 【第 2 轮】：AI 批量纠错与二次重试刮削 -----------------
-        if failed_items and ai_cfg.get("enabled"):
-            push_log(f"🤖 启动 AI 批量文件名纠错引擎，针对 {len(failed_items)} 部失败条目进行语义重构...")
-            
-            # 50 个一组批量送给 AI 处理，控制请求频率
-            batch_size = 50
-            for i in range(0, len(failed_items), batch_size):
-                chunk = failed_items[i:i+batch_size]
-                chunk_names = [item[2] for item in chunk]
-                
-                push_log(f"🤖 正在调用 AI 专家模型批量纠错第 {i+1}~{min(i+batch_size, len(failed_items))} 条文件名...")
-                fixed_results = scraper_service.call_openrouter_batch_fix(chunk_names, ai_cfg)
-                fixed_map = {f.get("original"): f for f in fixed_results if f.get("suggested")}
-                
-                for root, sf, base_fn, parent_dir in chunk:
-                    fix_info = fixed_map.get(base_fn)
-                    suggested_name = fix_info.get("suggested") if fix_info else None
-                    if not suggested_name:
-                        # 降级尝试规则模式清洗
-                        suggested_name = scraper_service.clean_scene_name_rules(base_fn)
-                        
-                    # 用修正后的名字再次尝试官方刮削
-                    scene = scraper_service.scrape_official_scene(suggested_name, parent_dir)
-                    if scene:
-                        poster_path = os.path.join(root, f"{base_fn}-poster.jpg")
-                        nfo_path = os.path.join(root, f"{base_fn}.nfo")
-                        p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
-                        if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
-                            poster_count += 1
-                            push_log(f"🎯 [AI纠错重试成功] '{base_fn}' ➔ 纠错为 '{suggested_name}' ➔ 成功补全海报与元数据！")
-                            
-                        if not os.path.exists(nfo_path):
-                            nfo_content = scraper_service.generate_nfo_file_content(scene, base_fn)
-                            with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
-                                nfo_f.write(nfo_content)
-                            scraped_count += 1
-                    time.sleep(1.0)
-                    
-        push_log(f"🎉 专区【{category}】两轮智能刮削全量闭环完成！总计补齐官方海报: {poster_count} 张，补齐 NFO: {scraped_count} 个！")
+        push_log(f"🎉 专区【{category}】官方瀑布流刮削完成！成功补齐海报: {poster_count} 张，补齐 NFO: {scraped_count} 个。共有 {len(failed_items)} 部未直接命中。")
         
     threading.Thread(target=_scrape_task, daemon=True).start()
-    return {"status": "started", "message": f"已启动专区【{category}】两轮智能刮削与 AI 自动纠错流水线！"}
+    return {"status": "started", "message": f"已启动专区【{category}】官方瀑布流刮削流水线！"}
 
 
 
