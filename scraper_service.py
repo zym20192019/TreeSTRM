@@ -67,17 +67,22 @@ def parse_media_identifier(filename: str, parent_dir_name: str = "") -> dict:
             return {"type": "jav", "number": standard_num, "prefix": prefix.upper(), "num": num}
 
     # 5. 检查欧美商业 Scene (Studio.YY.MM.DD.Performer.Title)
-    m_date = re.search(r'(\d{2,4})[._-](\d{2})[._-](\d{2})', fn)
+    raw_fn = fn
+    m_date = re.search(r'(?:^|[._-])(\d{2,4})[._-](\d{2})[._-](\d{2})(?:[._-]|$)', raw_fn)
     date_str = None
     if m_date:
         y, m, d = m_date.groups()
         if len(y) == 2: y = "20" + y
         date_str = f"{y}-{m}-{d}"
-        
-    m_site = re.match(r'^([A-Za-z0-9]+)[._-]', fn)
-    site = m_site.group(1) if m_site else parent_dir_name
-    
-    clean_title = re.sub(r'^[A-Za-z0-9]+[._-]\d{2,4}[._-]\d{2}[._-]\d{2}[._-]?', '', fn)
+        date_span = m_date.span()
+        site_part = raw_fn[:date_span[0]].strip('._- ')
+        title_part = raw_fn[date_span[1]:].strip('._- ')
+    else:
+        site_part = parent_dir_name
+        title_part = raw_fn
+
+    site = site_part if site_part else parent_dir_name
+    clean_title = re.sub(r'(?i)\b(xxx|2160p|1080p|720p|4k|h264|h265|hevc|hd|sd|ktr|prt)\b', '', title_part)
     clean_title = re.sub(r'[._-]+', ' ', clean_title).strip()
     
     return {
@@ -85,7 +90,7 @@ def parse_media_identifier(filename: str, parent_dir_name: str = "") -> dict:
         "site": site,
         "date": date_str,
         "clean_title": clean_title,
-        "raw": fn
+        "raw": raw_fn
     }
 
 # ==================== 2. 站点矩阵解析模块 (Amane 24-Sites Matrix) ====================
@@ -434,7 +439,20 @@ def scrape_tpdb_scene(info: dict) -> dict:
     return None
 
 def _format_tpdb_result(it: dict) -> dict:
-    p_url = it.get('poster') or (it.get('background') or {}).get('full') or (it.get('background') or {}).get('large')
+    # 全字段穿透提取最高清海报/背景图
+    p_url = (
+        it.get('poster') or
+        (it.get('posters') or {}).get('full') or
+        (it.get('posters') or {}).get('large') or
+        (it.get('background') or {}).get('full') or
+        (it.get('background') or {}).get('large') or
+        (it.get('posters') or {}).get('medium') or
+        (it.get('background') or {}).get('medium') or
+        it.get('image')
+    )
+    if p_url and (not isinstance(p_url, str) or not p_url.startswith('http') or p_url.endswith('/')):
+        p_url = None
+
     actors = [p.get('name') for p in it.get('performers', []) if p.get('name')]
     tags = [t.get('name') if isinstance(t, dict) else str(t) for t in it.get('tags', [])]
     return {
