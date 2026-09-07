@@ -1137,6 +1137,7 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                 if need_poster or need_nfo:
                     scene = scraper_service.scrape_official_scene(base_fn, parent_dir)
                     if scene:
+                        # 只要网络上确实抓到了真实官方元数据：
                         if need_poster:
                             p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
                             if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
@@ -1144,46 +1145,14 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                                 push_log(f"📸 [官方原画补齐] {base_fn} ➔ [{scene.get('title')}]")
                                 
                         if need_nfo:
+                            # 哪怕图片未取到，只要官方真实信息存在，坚决补齐真实正版 NFO！
                             nfo_content = scraper_service.generate_nfo_file_content(scene, base_fn)
                             with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
                                 nfo_f.write(nfo_content)
                             scraped_count += 1
                             push_log(f"📝 [正版NFO补齐] {base_fn} ➔ [{scene.get('title')}]")
                     else:
-                        # 即使全网没有原画封面，只要影片物理存在且缺少 NFO，坚决把正规 NFO 补齐！
-                        if need_nfo:
-                            info = scraper_service.parse_media_identifier(base_fn, parent_dir)
-                            m_num = info.get("number") or info.get("clean_title") or base_fn
-                            m_studio = info.get("studio") or info.get("site") or (parent_dir if "卖家" in parent_dir or "【" in parent_dir else category)
-                            
-                            tags = [category]
-                            m_type = info.get("type", "")
-                            if "FC2" in category or m_type == "fc2":
-                                tags.extend(["FC2", "素人", "无码"])
-                            elif "欧美" in category or m_type == "western_scene":
-                                tags.extend(["欧美", "Scene"])
-                            elif "无码" in category or m_type == "uncensored":
-                                tags.extend(["无码", "步兵"])
-                            elif "动漫" in category or "3d" in category.lower():
-                                tags.extend(["3D", "动漫", "同人"])
-                            else:
-                                tags.append("媒体库")
-                                
-                            fallback_scene = {
-                                "id": m_num,
-                                "title": f"{m_num} 【{parent_dir}】" if parent_dir and parent_dir != category else m_num,
-                                "studio": m_studio,
-                                "premiered": info.get("date"),
-                                "plot": f"【{category}/{parent_dir}】{m_num}",
-                                "actors": [],
-                                "tags": list(dict.fromkeys(tags))
-                            }
-                            nfo_content = scraper_service.generate_nfo_file_content(fallback_scene, base_fn)
-                            with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
-                                nfo_f.write(nfo_content)
-                            scraped_count += 1
-                            push_log(f"📝 [标准NFO全量补齐] {base_fn} ➔ [{fallback_scene.get('title')}]")
-                        
+                        # 如果全网没有官方真实信息（例如番号写错或全网无记录），绝不强行生造假 NFO！
                         failed_items.append((root, sf, base_fn, parent_dir))
                     time.sleep(1.0)
                     if max_items > 0 and (poster_count + scraped_count) >= max_items:
