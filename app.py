@@ -1137,7 +1137,7 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                 if not os.path.exists(poster_path) and not os.path.exists(os.path.join(root, f"{base_fn}-poster.jpeg")):
                     scene = scraper_service.scrape_official_scene(base_fn, parent_dir)
                     if scene:
-                        p_url = scene.get('poster') or (scene.get('background') or {}).get('full')
+                        p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
                         if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
                             poster_count += 1
                             push_log(f"📸 [第1轮原画成功] {base_fn} ➔ [{scene.get('title')}]")
@@ -1181,7 +1181,7 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                     if scene:
                         poster_path = os.path.join(root, f"{base_fn}-poster.jpg")
                         nfo_path = os.path.join(root, f"{base_fn}.nfo")
-                        p_url = scene.get('poster') or (scene.get('background') or {}).get('full')
+                        p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
                         if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
                             poster_count += 1
                             push_log(f"🎯 [AI纠错重试成功] '{base_fn}' ➔ 纠错为 '{suggested_name}' ➔ 成功补全海报与元数据！")

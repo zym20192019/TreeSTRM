@@ -489,3 +489,16 @@ def clear_running_state():
             os.remove(STATE_FILE)
         except Exception:
             pass
+
+# ==================== 7. 规则级清洗函数 (供 app.py 调用) ====================
+
+def clean_scene_name_rules(filename: str) -> str:
+    """
+    针对常见 Scene 杂质、括号扩展名、多重连字符进行规则清洗
+    """
+    fn = re.sub(r'[\.\s]?\((?:mp4|ts|mkv|wmv|avi)\)', '', filename, flags=re.IGNORECASE)
+    fn = re.sub(r'^(?:www\.\.ws_|kcf9\.com\s*|\[.*?\]\s*)', '', fn, flags=re.IGNORECASE)
+    fn = re.sub(r'XXX|2160p|1080p|720p|4k|540p|HEVC|x265|x264|PRT|MP4-KTR|-KTR|-sample', '', fn, flags=re.IGNORECASE)
+    fn = re.sub(r'[-_]+', '.', fn)
+    fn = re.sub(r'\.{2,}', '.', fn).strip('. -_')
+    return fn
