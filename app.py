@@ -1150,6 +1150,25 @@ def trigger_official_scrape(category: str, max_items: int = 0):
                             scraped_count += 1
                             push_log(f"📝 [正版NFO补齐] {base_fn} ➔ [{scene.get('title')}]")
                     else:
+                        # 即使全网没有原画封面，只要影片物理存在且缺少 NFO，坚决把正规 NFO 补齐！
+                        if need_nfo:
+                            info = scraper_service.parse_media_identifier(base_fn, parent_dir)
+                            m_num = info.get("number") or base_fn
+                            fallback_scene = {
+                                "id": m_num,
+                                "title": f"{m_num} 【{parent_dir}】",
+                                "studio": parent_dir if "卖家" in parent_dir else ("FC2-PPV" if "FC2" in base_fn else parent_dir),
+                                "premiered": None,
+                                "plot": f"【{parent_dir}】{m_num}",
+                                "actors": [],
+                                "tags": ["FC2", "素人", "无码"] if "FC2" in base_fn else ["素人", "媒体库"]
+                            }
+                            nfo_content = scraper_service.generate_nfo_file_content(fallback_scene, base_fn)
+                            with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
+                                nfo_f.write(nfo_content)
+                            scraped_count += 1
+                            push_log(f"📝 [标准NFO全量补齐] {base_fn} ➔ [{fallback_scene.get('title')}]")
+                        
                         failed_items.append((root, sf, base_fn, parent_dir))
                     time.sleep(1.0)
                     if max_items > 0 and (poster_count + scraped_count) >= max_items:
