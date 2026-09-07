@@ -27,6 +27,8 @@ def parse_media_identifier(filename: str, parent_dir_name: str = "") -> dict:
     智能识别 6 大品类：FC2素人、日本标准番号、日本无码大厂、欧美Scene、二次元动漫里番、欧美独立厂牌
     """
     fn = re.sub(r'\.[^.]+$', '', filename)
+    # 前置彻底剥离网盘副本标记如 (1), (2), (1)(1), [1], _1 等干扰项
+    fn = re.sub(r'(\(\d+\))+|(\[\d+\])+|_\d+$', '', fn).strip()
     fn = re.sub(r'\(mp4\)|\(mkv\)|\(wmv\)|\(avi\)|XXX|2160p|1080p|720p|4k|h264|h265|hevc|hd|sd', '', fn, flags=re.IGNORECASE).strip()
     
     # 1. 检查 FC2 素人
