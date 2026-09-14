@@ -264,7 +264,7 @@
                                 <input type="checkbox" id="chk-probe-streams" checked class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5">
                                 <span>深度补充音视频流信息</span>
                             </label>
-                            <button onclick="loadCategories()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
+                            <button id="btn-refresh-categories" onclick="loadCategories()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
                                 <i class="bi bi-arrow-clockwise"></i>
                                 <span>刷新列表</span>
                             </button>
@@ -527,6 +527,9 @@
 
         async function loadCategories() {
             const tbody = document.getElementById('categories-tbody');
+            const btn = document.getElementById('btn-refresh-categories');
+            const icon = btn ? btn.querySelector('i') : null;
+            if (icon) icon.classList.add('animate-spin');
             try {
                 const res = await fetch('/api/categories');
                 const data = await res.json();
@@ -636,17 +639,17 @@
                             <td class="px-6 py-4">
                                 <div class="flex items-center space-x-2">
                                     <div class="w-20 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                        <div class="bg-indigo-500 h-full rounded-full" style="width: ${coverRate}%"></div>
+                                        <div id="cat-cover-bar-${encodeURIComponent(cat.name)}" class="bg-indigo-500 h-full rounded-full" style="width: ${coverRate}%"></div>
                                     </div>
-                                    <span class="text-xs font-mono text-slate-400">${cat.cover_count} (${coverRate}%)</span>
+                                    <span id="cat-cover-txt-${encodeURIComponent(cat.name)}" class="text-xs font-mono text-slate-400">${cat.cover_count} (${coverRate}%)</span>
                                 </div>
                             </td>
                             <td class="px-6 py-4">
                                 <div class="flex items-center space-x-2">
                                     <div class="w-20 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                        <div class="bg-cyan-500 h-full rounded-full" style="width: ${nfoRate}%"></div>
+                                        <div id="cat-nfo-bar-${encodeURIComponent(cat.name)}" class="bg-cyan-500 h-full rounded-full" style="width: ${nfoRate}%"></div>
                                     </div>
-                                    <span class="text-xs font-mono text-slate-400">${cat.nfo_count} (${nfoRate}%)</span>
+                                    <span id="cat-nfo-txt-${encodeURIComponent(cat.name)}" class="text-xs font-mono text-slate-400">${cat.nfo_count} (${nfoRate}%)</span>
                                 </div>
                             </td>
                             <td class="px-6 py-4 text-right">
@@ -659,6 +662,8 @@
                 }).join('');
             } catch (e) {
                 console.error(e);
+            } finally {
+                if (icon) icon.classList.remove('animate-spin');
             }
         }
 
@@ -830,6 +835,18 @@
                     pBar.style.width = pct + '%';
                     pPercent.innerText = pct + '%';
                     pText.innerText = `专区【${gp.category}】治理中 (已处理: ${proc}/${total} | 封面+${gp.covers_extracted} | NFO+${gp.nfos_generated})${qTip}`;
+
+                    // 实时同步专区表格中当前治理行的动态计数
+                    if (gp.category) {
+                        const nfoTxt = document.getElementById(`cat-nfo-txt-${encodeURIComponent(gp.category)}`);
+                        const nfoBar = document.getElementById(`cat-nfo-bar-${encodeURIComponent(gp.category)}`);
+                        if (nfoTxt && total > 0) {
+                            const curNfos = gp.nfos_generated || proc;
+                            const curPct = Math.min(100, Math.round(curNfos / total * 100));
+                            nfoTxt.innerText = `${curNfos} (${curPct}%)`;
+                            if (nfoBar) nfoBar.style.width = `${curPct}%`;
+                        }
+                    }
                 } else {
                     statusBadge.innerText = '系统就绪';
                     statusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';

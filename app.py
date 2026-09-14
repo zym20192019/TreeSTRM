@@ -1383,35 +1383,57 @@ def get_categories():
     running_cat = current_running_job.get("category") if current_running_job else None
     queued_cats = [q.get("category") for q in governance_queue]
     
+    # 优先使用秒级全量底账缓存
+    cache_file = os.path.join(DATA_DIR, "categories_cache.json")
+    cached_map = {}
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as cf:
+                cached_map = json.load(cf)
+        except Exception:
+            pass
+
     for d in subdirs:
         p = os.path.join(root_dir, d)
-        sub_count = 0
-        v_set = set()
-        c_set = set()
-        n_set = set()
-        for root, _, files in os.walk(p):
-            for f in files:
-                if f.endswith('.strm'):
-                    v_set.add(os.path.join(root, f[:-5]))
-                elif re.search(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', f, re.IGNORECASE):
-                    m_base = re.sub(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
-                    c_set.add(os.path.join(root, m_base))
-                elif f.endswith('.nfo'):
-                    n_set.add(os.path.join(root, f[:-4]))
-                elif any(f.endswith(ext) for ext in COMPREHENSIVE_SUBTITLE_EXTS):
-                    sub_count += 1
-        
-        v_count = len(v_set)
-        c_count = len(c_set.intersection(v_set))
-        n_count = len(n_set.intersection(v_set))
+        if d in cached_map:
+            item = cached_map[d].copy()
+            v_count = item.get("video_count", 0)
+            sub_count = item.get("sub_count", 0)
+            c_count = item.get("cover_count", 0)
+            n_count = item.get("nfo_count", 0)
+        else:
+            sub_count = 0
+            v_set = set()
+            c_set = set()
+            n_set = set()
+            for root, _, files in os.walk(p):
+                for f in files:
+                    if f.endswith('.strm'):
+                        v_set.add(os.path.join(root, f[:-5]))
+                    elif re.search(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', f, re.IGNORECASE):
+                        m_base = re.sub(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
+                        c_set.add(os.path.join(root, m_base))
+                    elif f.endswith('.nfo'):
+                        n_set.add(os.path.join(root, f[:-4]))
+                    elif any(f.endswith(ext) for ext in COMPREHENSIVE_SUBTITLE_EXTS):
+                        sub_count += 1
+            v_count = len(v_set)
+            c_count = len(c_set.intersection(v_set))
+            n_count = len(n_set.intersection(v_set))
                 
         is_scraped = d in protected_set
-        
         status_state = "idle"
         status_text = "商业已刮削 (锁定保护)" if is_scraped else "原生待治理 (已解锁)"
+        
+        # 动态融合当前治理任务实时计数
         if d == running_cat:
             status_state = "running"
             status_text = "正在查漏补缺中..."
+            if gov_progress.get("is_running"):
+                live_nfos = gov_progress.get("nfos_generated", 0)
+                live_covers = gov_progress.get("covers_extracted", 0)
+                n_count = max(n_count, live_nfos)
+                c_count = min(v_count, c_count + live_covers)
         elif d in queued_cats:
             pos = queued_cats.index(d) + 1
             status_state = "queued"
