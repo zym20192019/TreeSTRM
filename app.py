@@ -1279,7 +1279,28 @@ def get_rules_api():
         sub_count = 0
         subdirs_list = []
         
-        if os.path.exists(r_dir):
+        # 1. 优先读取秒级全量底账缓存（0.001秒极速返回，杜绝19万文件IO卡死）
+        cache_file = os.path.join(DATA_DIR, "categories_cache.json")
+        cached_map = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as cf:
+                    cached_map = json.load(cf)
+            except Exception:
+                pass
+
+        if cached_map:
+            subdirs_list = sorted(list(cached_map.keys()))
+            v_count = sum(x.get("video_count", 0) for x in cached_map.values())
+            c_count = sum(x.get("cover_count", 0) for x in cached_map.values())
+            n_count = sum(x.get("nfo_count", 0) for x in cached_map.values())
+            sub_count = sum(x.get("sub_count", 0) for x in cached_map.values())
+            if gov_progress.get("is_running"):
+                live_nfos = gov_progress.get("nfos_generated", 0)
+                live_covers = gov_progress.get("covers_extracted", 0)
+                n_count += live_nfos
+                c_count += live_covers
+        elif os.path.exists(r_dir):
             subdirs = sorted([d for d in os.listdir(r_dir) if os.path.isdir(os.path.join(r_dir, d))])
             subdirs_list = subdirs
             v_set = set()
