@@ -822,11 +822,20 @@ def process_single_category_job(job: dict):
             ai_batch_chunk = 30
             for i in range(0, len(items_needing_nfo), ai_batch_chunk):
                 batch_slice = items_needing_nfo[i:i + ai_batch_chunk]
+                # 将 相对路径（含各级子目录分类上下文）+ 文件名 一并提供给大模型
+                batch_items_payload = []
+                for x in batch_slice:
+                    rel_to_cat = os.path.relpath(x["strm_path"], os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人"))
+                    batch_items_payload.append(f"{x['base_name']} (路径层级: {rel_to_cat})")
                 names_to_audit = [x["base_name"] for x in batch_slice]
-                push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼文件名关键词 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
-                chunk_res = call_ai_item_auditor(names_to_audit, f"{category_name} - {sub_folder_name}", current_ai_cfg)
+                push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼文件名与路径关键词 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
+                chunk_res = call_ai_item_auditor(batch_items_payload, f"{category_name} - {sub_folder_name}", current_ai_cfg)
                 if chunk_res:
-                    file_ai_details.update(chunk_res)
+                    # 兼容返回 key 为 base_name 或者带路径的原始 payload
+                    for k, v in chunk_res.items():
+                        clean_k = k.split(" (路径层级:")[0].strip()
+                        file_ai_details[clean_k] = v
+                        file_ai_details[k] = v
 
         # 先顺序极速完成 NFO 补齐与元数据准备
         work_tasks = []
@@ -934,6 +943,10 @@ def queue_worker_loop():
                 with gov_lock:
                     next_job = governance_queue.pop(0)
                     gov_progress["queue_length"] = len(governance_queue)
+                # 永久免打扰专区拦截（如：有声小说内嵌ID3标签绝不触碰）
+                if next_job.get("category") in ["有声小说"]:
+                    push_log(f"🛡️ 检测到专区【{next_job.get('category')}】属于免打扰专区，自动跳过治理！")
+                    continue
                 process_single_category_job(next_job)
             else:
                 if not current_running_job and not gov_progress["is_paused_for_captcha"]:
@@ -1463,6 +1476,18 @@ def trigger_category_governance(category: str, extract_covers: bool = True, prob
         pos = len(governance_queue)
         push_log(f"📥 专区【{category}】已加入自动排队序列 (排在第 {pos} 位)！")
         return {"status": "queued", "message": f"已将【{category}】加入排队序列 (第 {pos} 位)！当前专区完成后将自动无缝接力推进！"}
+
+@app.delete("/api/categories/governance/queue/{category}")
+def remove_category_from_queue(category: str):
+    global governance_queue
+    with gov_lock:
+        original_len = len(governance_queue)
+        governance_queue = [q for q in governance_queue if q.get("category") != category]
+        gov_progress["queue_length"] = len(governance_queue)
+        if len(governance_queue) < original_len:
+            push_log(f"🗑️ 已成功从排队序列中移除专区【{category}】")
+            return {"status": "success", "message": f"已成功从排队序列中移除【{category}】！"}
+        return {"status": "not_found", "message": f"专区【{category}】不在排队序列中"}
 
 @app.post("/api/sync")
 def trigger_sync(background_tasks: BackgroundTasks, rule_id: Optional[str] = None):
