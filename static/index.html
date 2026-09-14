@@ -259,7 +259,11 @@
                                 <p class="text-xs text-slate-400 mt-0.5"><b>🌟 自动排队已就绪</b>：随时点击其他专区的「全量查漏补缺」，任务自动加入排队序列，上一个完成后自动顺延推进！</p>
                             </div>
                         </div>
-                        <div class="flex items-center space-x-2">
+                        <div class="flex items-center space-x-3">
+                            <label class="inline-flex items-center space-x-2 text-xs font-medium text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-800 transition" title="勾选后，全量查漏补缺将同时对已有封面的条目补充 4K/AAC/大小 等底层流信息">
+                                <input type="checkbox" id="chk-probe-streams" checked class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5">
+                                <span>深度补充音视频流信息</span>
+                            </label>
                             <button onclick="loadCategories()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
                                 <i class="bi bi-arrow-clockwise"></i>
                                 <span>刷新列表</span>
@@ -695,7 +699,8 @@
         }
 
         async function runCategoryGov(categoryName, maxItems, totalCount) {
-            const res = await fetch(`/api/categories/governance?category=${encodeURIComponent(categoryName)}&extract_covers=true&max_items=${maxItems}`, {
+            const probeStreams = document.getElementById('chk-probe-streams')?.checked || false;
+            const res = await fetch(`/api/categories/governance?category=${encodeURIComponent(categoryName)}&extract_covers=true&probe_streams=${probeStreams}&max_items=${maxItems}`, {
                 method: 'POST'
             });
             const data = await res.json();

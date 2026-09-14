@@ -89,19 +89,18 @@ def sync_strms_pure_1to1(
     push_log("正在构建本次云端目标 STRM 完整集合...")
     expected_strms = {}
 
+    # 严格只有正片视频生成 .strm 播放索引，字幕文件绝不生成/覆盖 .strm
     for rel_path in video_paths:
         dirname = os.path.dirname(rel_path)
         filename = os.path.basename(rel_path)
-        basename, _ = os.path.splitext(filename)
+        basename, raw_ext = os.path.splitext(filename)
+        
+        # 安全防御拦截：如果扩展名属于字幕或非视频，坚决丢弃
+        if raw_ext.lower() in COMPREHENSIVE_SUBTITLE_EXTS:
+            continue
+            
         strm_filename = f"{basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
-        content = f"{strm_prefix}/{rel_path.lstrip('/')}"
-        expected_strms[target_path] = content
-
-    for rel_path in sub_paths:
-        dirname = os.path.dirname(rel_path)
-        filename = os.path.basename(rel_path)
-        target_path = os.path.join(output_dir, dirname, filename) if dirname else os.path.join(output_dir, filename)
         content = f"{strm_prefix}/{rel_path.lstrip('/')}"
         expected_strms[target_path] = content
 

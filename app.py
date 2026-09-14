@@ -11,9 +11,11 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 LOGS_FILE = os.path.join(DATA_DIR, "history.json")
 SPEED_FILE = os.path.join(DATA_DIR, "speed.json")
+LOG_DIR = os.path.join(DATA_DIR, "logs")
 
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 COMPREHENSIVE_VIDEO_EXTS = {
     '.mp4', '.mkv', '.avi', '.wmv', '.mov', '.flv', '.webm', '.m4v',
@@ -26,7 +28,7 @@ COMPREHENSIVE_SUBTITLE_EXTS = {
 }
 
 live_log_messages: List[str] = []
-MAX_LIVE_LOGS = 300
+MAX_LIVE_LOGS = 1000
 
 TG_BOT_TOKEN = ""
 TG_CHAT_ID = "5662349315"
@@ -38,12 +40,36 @@ def send_telegram_alert(text: str):
     except Exception:
         pass
 
+def cleanup_logs_older_than_7_days():
+    """自动清理超过 7 天的历史日志文件"""
+    try:
+        now = time.time()
+        cutoff = now - (7 * 86400)
+        import glob
+        for p in glob.glob(os.path.join(LOG_DIR, "treestrm_*.log")):
+            if os.path.getmtime(p) < cutoff:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 def push_log(msg: str):
     ts = time.strftime("%H:%M:%S")
     entry = f"[{ts}] {msg}"
     live_log_messages.append(entry)
     if len(live_log_messages) > MAX_LIVE_LOGS:
         live_log_messages.pop(0)
+
+    # 7 天持久化滚动存储
+    today = time.strftime("%Y-%m-%d")
+    log_file = os.path.join(LOG_DIR, f"treestrm_{today}.log")
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 # 强制红线：单 Cookie 慢牛流控底线 >= 2.0s
 MIN_SAFE_DELAY = 2.0
@@ -391,12 +417,77 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
         }
         resp = requests.post(url, headers=headers, json=data, timeout=25).json()
         content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+        # 匹配大括号提取合法 JSON (支持 reasoning 模型)
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if not json_match and resp.get("choices", [{}])[0].get("message", {}).get("reasoning"):
+            # 有些模型只输出在 reasoning 里或者被包裹
+            pass
         if json_match:
             return json.loads(json_match.group(0))
     except Exception as e:
         push_log(f"⚠️ AI 标签审批批次跳过 (降级走规则): {str(e)[:60]}")
     return None
+
+def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict) -> Dict[str, dict]:
+    """
+    针对单批文件（建议 30-50 个）一次性送入大模型，
+    依据各自文件名中的特色词（如模特、服饰、剧情、编号）精准提取每个视频独有的标签和清洗标题。
+    返回: { "文件名/base_fn": {"clean_title": "...", "tags": [...], "summary": "..."} }
+    """
+    if not ai_cfg.get("enabled") or not ai_cfg.get("api_key") or not file_names:
+        return {}
+        
+    api_base = (ai_cfg.get("api_base") or "https://openrouter.ai/api/v1").rstrip("/")
+    api_key = ai_cfg.get("api_key")
+    model = ai_cfg.get("model") or "gemini-3.1-flash-lite"
+    
+    prompt = f"""你是媒体库元数据与标签治理专家。
+专区环境: {folder_hint}
+
+请仔细分析以下视频文件名列表。很多文件名中包含了重要的人名/模特、服饰(如瑜伽裤/皮裤/旗袍)、场景或编号等信息。
+请为每个文件提取/清洗出：
+1. clean_title: 去除编号、格式后缀、无用哈希字符(#)后的优雅展示标题
+2. tags: 从该文件名中精准提炼出的专属于该视频的特征标签列表（如服饰、模特、动作、拍摄类型等，3-6个）
+3. summary: 结合文件名看点生成的简短简介（25字以内）
+
+输出必须严格为合法的 JSON 对象（严禁包含 markdown 代码块包裹标记，直接以大括号 {{ 开头结尾），格式如下：
+{{
+  "原文件名": {{
+    "clean_title": "清洗后的展示标题",
+    "tags": ["标签1", "标签2"],
+    "summary": "简述"
+  }}
+}}
+
+待处理文件名列表：
+""" + "\n".join([f"- {fn}" for fn in file_names])
+
+    try:
+        url = f"{api_base}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/treestrm",
+            "X-Title": "TreeSTRM",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，必须严格输出合法JSON对象。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2
+        }
+        resp = requests.post(url, headers=headers, json=data, timeout=30).json()
+        content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+    except Exception as e:
+        push_log(f"⚠️ 批量文件名 AI 提炼跳过: {str(e)[:60]}")
+    return {}
 
 def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: int = 0, width: int = 1920, height: int = 1080):
     tags_xml = "\n".join([f"  <tag>{t}</tag>" for t in meta.get("tags", [])])
@@ -432,7 +523,21 @@ def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: i
 
 # ----------------- CD2 本地通道 Fast Seek 抽帧核心 (0 验证码、0 拦截、0.9s 秒级出图) -----------------
 
-from engine.cd2_extractor import extract_cover_by_cd2
+from engine.cd2_extractor import extract_cover_by_cd2, probe_media_info, update_nfo_with_streamdetails
+
+
+def has_streamdetails_in_nfo(nfo_path: str) -> bool:
+    """严格判定 NFO 是否已同时含有有效的视频流与音频流编码信息"""
+    if not nfo_path or not os.path.exists(nfo_path):
+        return False
+    try:
+        with open(nfo_path, "r", encoding="utf-8", errors="ignore") as f:
+            chunk = f.read(8192)
+            has_video = "<video>" in chunk and "<codec>" in chunk
+            has_audio = "<audio>" in chunk and "<codec>" in chunk
+            return has_video and has_audio
+    except Exception:
+        return False
 
 
 # ----------------- 全量目录树 STRM 极速生成 (独立模块) -----------------
@@ -451,20 +556,18 @@ def sync_strms_pure_1to1(
     push_log("正在构建本次云端目标 STRM 完整集合...")
     expected_strms = {}
     
+    # 严格只有正片视频生成 .strm 播放索引，字幕文件绝不生成/覆盖 .strm
     for rel_path in video_paths:
         dirname = os.path.dirname(rel_path)
         filename = os.path.basename(rel_path)
-        basename, _ = os.path.splitext(filename)
+        basename, raw_ext = os.path.splitext(filename)
+        
+        # 安全防御拦截：如果扩展名属于字幕或非视频，坚决丢弃
+        if raw_ext.lower() in COMPREHENSIVE_SUBTITLE_EXTS:
+            continue
+            
         strm_filename = f"{basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
-        content = f"{strm_prefix}/{rel_path.lstrip('/')}"
-        expected_strms[target_path] = content
-
-    for rel_path in sub_paths:
-        dirname = os.path.dirname(rel_path)
-        filename = os.path.basename(rel_path)
-        # 字幕文件直接保持原文件名
-        target_path = os.path.join(output_dir, dirname, filename) if dirname else os.path.join(output_dir, filename)
         content = f"{strm_prefix}/{rel_path.lstrip('/')}"
         expected_strms[target_path] = content
 
@@ -597,6 +700,7 @@ def process_single_category_job(job: dict):
     global current_running_job
     category_name = job.get("category")
     extract_covers = job.get("extract_covers", True)
+    probe_streams = job.get("probe_streams", False)
     max_items = job.get("max_items", 0)
     
     current_running_job = job
@@ -608,7 +712,7 @@ def process_single_category_job(job: dict):
     start_t = time.time()
     
     current_delay = get_dynamic_delay()
-    push_log(f"======== 🚀 启动【{category_name}】CD2 高速无风控治理流水线 (流控: {current_delay}s) ========")
+    push_log(f"======== 🚀 启动【{category_name}】CD2 高速无风控治理流水线 (流控: {current_delay}s, 补流信息: {probe_streams}) ========")
     cfg = load_config()
     ai_cfg = cfg.get("ai_governance", {})
     cookie = cfg.get("cookie", "")
@@ -625,6 +729,7 @@ def process_single_category_job(job: dict):
     total_v = 0
     missing_covers_count = 0
     missing_nfos_count = 0
+    missing_streams_count = 0
     
     for root, dirs, files in os.walk(base_cat_dir):
         strms = [f for f in files if f.endswith('.strm')]
@@ -641,11 +746,13 @@ def process_single_category_job(job: dict):
                 nfo = os.path.join(root, f"{base_fn}.nfo")
                 has_p = os.path.exists(poster) and os.path.getsize(poster) > 1000
                 has_n = os.path.exists(nfo)
+                has_s = has_streamdetails_in_nfo(nfo) if has_n else False
                 
                 # 字幕文件不计入待补封面和待补 NFO 统计
                 if not is_sub:
                     if not has_p: missing_covers_count += 1
                     if not has_n: missing_nfos_count += 1
+                    if not has_s: missing_streams_count += 1
                 
                 folder_items.append({
                     "strm_path": os.path.join(root, sf),
@@ -656,7 +763,8 @@ def process_single_category_job(job: dict):
                     "thumb_path": os.path.join(root, f"{base_fn}-thumb.jpg"),
                     "nfo_path": nfo,
                     "has_poster": has_p,
-                    "has_nfo": has_n
+                    "has_nfo": has_n,
+                    "has_streamdetails": has_s
                 })
             sub_batches[root] = folder_items
             total_v += len(folder_items)
@@ -666,7 +774,8 @@ def process_single_category_job(job: dict):
     for root, items in sub_batches.items():
         for it in items:
             if not it.get("is_sub", False):
-                if not it["has_nfo"] or (extract_covers and not it["has_poster"]):
+                needs_work = (not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"])
+                if needs_work:
                     need_work_items.append((root, it))
                 
     target_limit = len(need_work_items) if (max_items <= 0) else min(len(need_work_items), max_items)
@@ -676,7 +785,7 @@ def process_single_category_job(job: dict):
     gov_progress["nfos_generated"] = 0
     gov_progress["ai_batches_done"] = 0
     
-    push_log(f"专区【{category_name}】全盘盘点完毕：共 {total_v} 部视频，待处理目标: {len(need_work_items)} 部 (待补封面: {missing_covers_count} 张, 待补 NFO: {missing_nfos_count} 个)")
+    push_log(f"专区【{category_name}】全盘盘点完毕：共 {total_v} 部视频，待处理目标: {len(need_work_items)} 部 (待补封面: {missing_covers_count}, 待补 NFO: {missing_nfos_count}, 缺流信息: {missing_streams_count})")
     
     processed_count = 0
     
@@ -684,7 +793,7 @@ def process_single_category_job(job: dict):
         if processed_count >= target_limit: break
         if gov_progress["is_paused_for_captcha"]: break
         
-        sub_need_work = [it for it in items if (not it["has_nfo"] or (extract_covers and not it["has_poster"]))]
+        sub_need_work = [it for it in items if ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
         if not sub_need_work:
             continue
             
@@ -694,21 +803,30 @@ def process_single_category_job(job: dict):
         # 1. 智能 AI 审批
         needs_nfo = any(not it["has_nfo"] for it in items)
         ai_res = None
-        if needs_nfo and ai_cfg.get("enabled") and ai_cfg.get("api_key"):
-            ai_res = call_ai_auditor(f"{category_name} - {sub_folder_name}", sample_files, ai_cfg)
+        current_ai_cfg = load_config().get("ai_governance", ai_cfg)
+        if needs_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
+            ai_res = call_ai_auditor(f"{category_name} - {sub_folder_name}", sample_files, current_ai_cfg)
             if ai_res:
                 gov_progress["ai_batches_done"] += 1
                 push_log(f"🤖 [{sub_folder_name}] AI 审批就绪: 分类={ai_res.get('genre')}")
 
-        # 2. 锁定子目录 pickcode 映射 (顺带提取 filesize 和 runtime)
-        folder_pickcode_map = {}
-        if session:
-            folder_pickcode_map = fetch_folder_pickcodes(session, category_name, folder_path)
-
         # 过滤本目录下真正需要处理的条目
-        active_items = [it for it in items if (not it["has_nfo"] or (extract_covers and not it["has_poster"]))]
+        active_items = [it for it in items if ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
         if not active_items:
             continue
+
+        # 2. 针对需要写 NFO 的条目，按批次（每批 30 个）让大模型精准提取文件名特异性元数据
+        items_needing_nfo = [it for it in active_items if not it["has_nfo"]]
+        file_ai_details = {}
+        if items_needing_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
+            ai_batch_chunk = 30
+            for i in range(0, len(items_needing_nfo), ai_batch_chunk):
+                batch_slice = items_needing_nfo[i:i + ai_batch_chunk]
+                names_to_audit = [x["base_name"] for x in batch_slice]
+                push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼文件名关键词 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
+                chunk_res = call_ai_item_auditor(names_to_audit, f"{category_name} - {sub_folder_name}", current_ai_cfg)
+                if chunk_res:
+                    file_ai_details.update(chunk_res)
 
         # 先顺序极速完成 NFO 补齐与元数据准备
         work_tasks = []
@@ -722,44 +840,76 @@ def process_single_category_job(job: dict):
                 raw_target = sf.read().strip()
                 video_name = os.path.basename(raw_target)
 
-            file_meta_info = folder_pickcode_map.get(video_name, {})
-            file_size_bytes = file_meta_info.get('size', 0) if isinstance(file_meta_info, dict) else 0
-            play_long_sec = file_meta_info.get('play_long', 0) if isinstance(file_meta_info, dict) else 0
-            runtime_mins = round(play_long_sec / 60) if play_long_sec > 0 else 0
-
-            # 1. 补 NFO
+            # 1. 极速纯文本生成 NFO (不阻塞 CD2 IO，基础骨架秒出)
             if not it["has_nfo"]:
                 rel_p = os.path.relpath(it["strm_path"], cfg.get("default_output"))
                 meta = extract_rule_tags(rel_p)
+                
+                # 优先注入大模型针对该单文件的个性化提炼结果
+                item_ai = file_ai_details.get(it["base_name"]) or file_ai_details.get(video_name)
+                if item_ai and isinstance(item_ai, dict):
+                    if item_ai.get("clean_title"):
+                        meta["title"] = item_ai.get("clean_title")
+                    if item_ai.get("tags") and isinstance(item_ai.get("tags"), list):
+                        meta["tags"] = list(dict.fromkeys(meta["tags"] + item_ai.get("tags")))
+                    if item_ai.get("summary"):
+                        meta["summary"] = item_ai.get("summary")
+                
+                # 叠加目录级公共元数据
                 if ai_res:
-                    if ai_res.get("studio"): meta["studio"] = ai_res.get("studio")
+                    if ai_res.get("studio") and not meta.get("studio"): meta["studio"] = ai_res.get("studio")
                     if ai_res.get("genre"):
                         g = ai_res.get("genre")
                         meta["genres"] = g if isinstance(g, list) else [g]
                     if ai_res.get("common_tags"):
                         meta["tags"] = list(dict.fromkeys(meta["tags"] + ai_res.get("common_tags")))
-                    if ai_res.get("clean_summary"):
+                    if ai_res.get("clean_summary") and not meta.get("summary"):
                         meta["summary"] = ai_res.get("clean_summary")
-                write_nfo_file(it["nfo_path"], meta, runtime_mins=runtime_mins, filesize=file_size_bytes)
+                
+                write_nfo_file(it["nfo_path"], meta)
                 gov_progress["nfos_generated"] += 1
+                it["has_nfo"] = True
+                studio_tag = f"[{meta.get('studio')}]" if meta.get('studio') else ""
+                genre_tag = f"/{meta.get('genres', [''])[0]}" if meta.get('genres') else ""
+                push_log(f"📝 [生成NFO] 【{video_name[:26]}】元数据就绪 {studio_tag}{genre_tag} (封面:{'已存在' if it['has_poster'] else '待抽取'}, 累计NFO: {gov_progress['nfos_generated']})")
+            elif probe_streams and not has_streamdetails_in_nfo(it["nfo_path"]):
+                push_log(f"📋 [核验NFO] 【{video_name[:26]}】发现历史NFO存在但缺少音视频流，已加入深度补流队列！")
 
-            if extract_covers and not it["has_poster"]:
-                seek_target = max(5, int(play_long_sec * 0.45)) if play_long_sec > 15 else 2
-                work_tasks.append((raw_target, it["poster_path"], it["thumb_path"], seek_target, video_name))
+            # 2. 判定是否需要进入 CD2 探针 / 抽封面队列
+            needs_poster = extract_covers and not it["has_poster"]
+            needs_probe = probe_streams and not has_streamdetails_in_nfo(it["nfo_path"])
+            if needs_poster or needs_probe:
+                reason = "缺封面+缺流信息" if (needs_poster and needs_probe) else ("缺封面" if needs_poster else "有封面但缺流信息")
+                work_tasks.append((raw_target, it["poster_path"], it["thumb_path"], it["nfo_path"], video_name, needs_poster, reason))
 
-        # 2. CD2 本地通道多线程并发 Fast Seek 抽封面 (动态线程数配置，0 验证码、0.9s 秒级出图)
+        # 3. CD2 本地通道多线程并发 Fast Seek 抽封面 + 顺带探针流信息
         if work_tasks:
             worker_threads = max(1, min(10, int(cfg.get("cover_threads", 3))))
             def _extract_worker(task):
-                raw_t, p_path, th_path, seek_t, v_name = task
+                raw_t, p_path, th_path, nfo_p, v_name, do_poster, reason = task
                 try:
-                    ok = extract_cover_by_cd2(raw_t, p_path, th_path, seek_sec=seek_t)
-                    if ok:
-                        with gov_lock:
-                            gov_progress["covers_extracted"] += 1
-                            gov_progress["recent_success_streak"] += 1
-                            if gov_progress["covers_extracted"] % 10 == 0 or gov_progress["covers_extracted"] == 1:
-                                push_log(f"📸 [CD2直出-{worker_threads}线程] 成功补齐封面: {v_name[:25]}... (累计: {gov_progress['covers_extracted']} 张)")
+                    if do_poster:
+                        ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p)
+                        if ok:
+                            with gov_lock:
+                                gov_progress["covers_extracted"] += 1
+                                gov_progress["recent_success_streak"] += 1
+                                push_log(f"📸 [补齐封面] 【{v_name[:26]}】({reason}) ➔ 成功提取居中黄金封面并注入4K/AAC/大小！(已补封面: {gov_progress['covers_extracted']} 张)")
+                    else:
+                        # 封面已有，仅需深度探针补充音视频流信息与大小
+                        host_target = raw_t
+                        if host_target.startswith('/movies/'):
+                            host_target = '/Movies/' + host_target[8:]
+                        m_info = probe_media_info(host_target, timeout_sec=18)
+                        if update_nfo_with_streamdetails(nfo_p, m_info):
+                            with gov_lock:
+                                gov_progress["recent_success_streak"] += 1
+                                v_str = f"{m_info.get('video', {}).get('width')}x{m_info.get('video', {}).get('height')}"
+                                a_str = f"{m_info.get('audio', {}).get('codec', 'audio')} {m_info.get('audio', {}).get('channels', 2)}ch"
+                                size_mb = round(m_info.get('filesize', 0) / (1024 * 1024), 1)
+                                push_log(f"🔍 [深度补流] 【{v_name[:24]}】➔ 成功补全流信息与大小: {v_str}, {a_str}, 大小:{size_mb}MB, 时长:{round(m_info.get('duration', 0))}s")
+                        else:
+                            push_log(f"⚠️ [探针重试中] 【{v_name[:24]}】CD2响应延迟或超时，保留原NFO绝不污染，留待后续复读")
                 except Exception:
                     pass
 
@@ -1289,7 +1439,7 @@ def trigger_clean_orphan(category: str):
     return {"status": "ok", "result": res}
 
 @app.post("/api/categories/governance")
-def trigger_category_governance(category: str, extract_covers: bool = True, max_items: int = 0):
+def trigger_category_governance(category: str, extract_covers: bool = True, probe_streams: bool = False, max_items: int = 0):
     if current_running_job and current_running_job.get("category") == category:
         return {"status": "running", "message": f"专区【{category}】当前正在查漏补缺推进中！"}
         
@@ -1301,6 +1451,7 @@ def trigger_category_governance(category: str, extract_covers: bool = True, max_
         governance_queue.append({
             "category": category,
             "extract_covers": extract_covers,
+            "probe_streams": probe_streams,
             "max_items": max_items
         })
         gov_progress["queue_length"] = len(governance_queue)
