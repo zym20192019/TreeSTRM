@@ -929,6 +929,21 @@ def process_single_category_job(job: dict):
     done_msg = f"🎉 专区【{category_name}】CD2 无风控治理圆满完成！共补齐 NFO: {gov_progress['nfos_generated']} 个，补齐封面: {gov_progress['covers_extracted']} 张！耗时: {gov_progress['elapsed']}秒"
     push_log(done_msg)
     send_telegram_alert(f"✅ [TreeSTRM 完成通知]\n{done_msg}")
+    
+    # 动态更新全量底账缓存中该分类的 nfo_count 和 cover_count，保证 UI 刷新立即可见
+    try:
+        cache_file = os.path.join(DATA_DIR, "categories_cache.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as cf:
+                c_map = json.load(cf)
+            if category_name in c_map:
+                c_map[category_name]["nfo_count"] = c_map[category_name].get("nfo_count", 0) + gov_progress.get("nfos_generated", 0)
+                c_map[category_name]["cover_count"] = c_map[category_name].get("cover_count", 0) + gov_progress.get("covers_extracted", 0)
+                with open(cache_file, "w", encoding="utf-8") as cf:
+                    json.dump(c_map, cf, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
     try:
         from services.emby_client import EmbyClient
         EmbyClient().trigger_category_refresh(category_name)
