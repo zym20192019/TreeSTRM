@@ -540,8 +540,8 @@
 
                 tbody.innerHTML = data.map((cat, idx) => {
                     const isProtected = cat.is_scraped;
-                    const coverRate = cat.video_count > 0 ? Math.round(cat.cover_count / cat.video_count * 100) : 0;
-                    const nfoRate = cat.video_count > 0 ? Math.round(cat.nfo_count / cat.video_count * 100) : 0;
+                    const coverRate = cat.video_count > 0 ? Math.min(100, Math.round(cat.cover_count / cat.video_count * 100)) : 0;
+                    const nfoRate = cat.video_count > 0 ? Math.min(100, Math.round(cat.nfo_count / cat.video_count * 100)) : 0;
 
                     let statusBadge = '';
                     if (cat.status_state === 'running') {
