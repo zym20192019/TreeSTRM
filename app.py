@@ -239,17 +239,45 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
     
     pick_code = None
     push_log("正在轮询等待 115 服务端生成大树文件...")
-    
-    for i in range(60):
+
+    # 115 超大目录树可能已在网盘生成文件，但 export_dir 状态接口迟迟不返回 pick_code。
+    # 轮询期间按任务命名搜索当前 CID 对应的最新目录树文件，发现后直接复用，避免无效超时。
+    for i in range(120):
         time.sleep(2)
         url = 'https://webapi.115.com/files/export_dir' + (f'?export_id={export_id}' if export_id else '')
-        st_res = session.get(url, timeout=15).json()
+        try:
+            st_res = session.get(url, timeout=15).json()
+        except Exception:
+            st_res = {}
         raw_d = st_res.get('data', {})
         if isinstance(raw_d, dict) and raw_d.get('pick_code'):
             pick_code = raw_d['pick_code']
             fn = raw_d.get('file_name', '目录树.txt')
             push_log(f"✅ 115 目录树快照已就绪: {fn} (pickcode: {pick_code})")
             break
+
+        # 当前导出任务命名为“根目录YYYYMMDDHHMMSS_目录树.txt”，通过服务端搜索定位，
+        # 只取当前 CID 的精确结果，不做全库分页遍历。
+        try:
+            search_res = session.get(
+                'https://webapi.115.com/files/search',
+                params={'search_value': '目录树', 'limit': 100},
+                timeout=15
+            ).json()
+            candidates = [
+                x for x in (search_res.get('data') or [])
+                if isinstance(x, dict) and str(x.get('cid')) == str(cid)
+                and x.get('pc') and '目录树' in str(x.get('n', ''))
+            ]
+            if candidates:
+                # 搜索结果按最新生成顺序返回；取第一个精确命中即可。
+                item = candidates[0]
+                pick_code = item['pc']
+                push_log(f"✅ 已发现网盘中刚生成的目录树: {item.get('n')} (pickcode: {pick_code})")
+                break
+        except Exception:
+            pass
+
         if i > 0 and i % 5 == 0:
             push_log(f"等待 115 服务端处理中... 已耗时 {i*2} 秒")
             
@@ -271,34 +299,62 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
     push_log(f"目录树全量下载成功！大小: {mb_size} MB")
     return resp.content.decode('utf-16le', errors='ignore')
 
+def _tree_entry_name(line: str) -> str:
+    """只移除 115 树格式的结构前缀，保留真实文件名的首字符。
+
+    115 的条目行形如 ``| | |-文件名``；若真实名称本身以 ``-`` 开头，
+    则会形如 ``| | |--文件名``。旧实现把所有连续的 ``-`` 都清掉，
+    会把真实首横杠吞掉。这里固定只移除一个结构分隔横杠。
+    """
+    value = str(line or "").replace("\ufeff", "").rstrip("\r\n")
+    value = re.sub(r"^[|\s]*", "", value)
+    if value.startswith("-"):
+        value = value[1:]
+    return value.strip()
+
+
 def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs: bool = True) -> tuple:
     push_log("正在合并软换行并解析目录树结构...")
     clean_lines = []
     current_line = ''
     for raw_line in io.StringIO(str(content or "")):
         line = str(raw_line or "").replace("\ufeff", "").rstrip("\r\n")
-        if not line.strip(): continue
+        if not line: continue
         if line.startswith('|') or line.startswith('﻿|'):
             if current_line: clean_lines.append(current_line)
             current_line = line
         else:
-            current_line += ' ' + line.strip()
+            # 115 长文件名会在空格处软换行；补回换行分隔空格，保留首行尾随空格，
+            # 避免“精舞社 可涵  NO1.mp4”被误拼成单空格路径。
+            current_line += " " + line.lstrip(" ")
     if current_line: clean_lines.append(current_line)
+
+    line_levels = [l.count("|") for l in clean_lines]
+    num_lines = len(clean_lines)
 
     path_stack = {}
     matched_videos = []
     matched_subs = []
     ext_stats = {}
     
-    for line in clean_lines:
-        level = line.count("|")
-        clean_name = re.sub(r"^[|\s—\-]+", "", line).strip()
+    for i in range(num_lines):
+        line = clean_lines[i]
+        level = line_levels[i]
+        clean_name = _tree_entry_name(line)
         if not clean_name: continue
         
         for stale_level in [k for k in path_stack.keys() if k > level]:
             path_stack.pop(stale_level, None)
-        path_stack[level] = clean_name
-        
+
+        # 核心修复：115 目录树把单层目录/文件名中的全角或原生斜杠打印为半角 /
+        # 但在文件系统路径中，单层名字内部的 / 必须替换为全角 ／ 避免被误切分成多级不存在的虚拟子目录
+        clean_name_escaped = clean_name.replace('/', '／')
+        path_stack[level] = clean_name_escaped
+
+        # 智能判定：若下一行层级更深，说明当前项是目录（避免类似 1(2).mp4 命名的历史空文件夹被误当成视频生成 STRM）
+        if i + 1 < num_lines and line_levels[i + 1] > level:
+            continue
+
         parts = [path_stack[d] for d in range(level + 1) if d in path_stack]
         if parts and parts[0] in ['根目录', 'ROOT', '']:
             parts = parts[1:]
@@ -538,6 +594,18 @@ def has_streamdetails_in_nfo(nfo_path: str) -> bool:
             return has_video and has_audio
     except Exception:
         return False
+def is_subtitle_strm(strm_path: str, filename: str) -> bool:
+    """读取 STRM 实际目标扩展名，避免 `(sub).mp4` 被误判为字幕。"""
+    try:
+        with open(strm_path, "r", encoding="utf-8", errors="replace") as f:
+            target = f.readline().strip()
+        target_ext = os.path.splitext(target.split("?", 1)[0])[1].lower()
+        if target_ext:
+            return target_ext in COMPREHENSIVE_SUBTITLE_EXTS
+    except OSError:
+        pass
+    m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
+    return bool(m and ('.' + m.group(1).lower()) in COMPREHENSIVE_SUBTITLE_EXTS)
 
 
 # ----------------- 全量目录树 STRM 极速生成 (独立模块) -----------------
@@ -585,6 +653,7 @@ def sync_strms_pure_1to1(
     v_created = 0
     v_skipped = 0
     v_deleted = 0
+    v_repaired = 0
     
     if auto_cleanup and len(expected_strms) > 0:
         orphan_strms = existing_local_strms - set(expected_strms.keys())
@@ -618,13 +687,23 @@ def sync_strms_pure_1to1(
                 v_created += 1
             except Exception: pass
         else:
-            v_skipped += 1
+            try:
+                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                    existing_content = f.read().strip()
+                if existing_content != content:
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    v_repaired += 1
+                else:
+                    v_skipped += 1
+            except Exception:
+                v_skipped += 1
 
         if batch_count % 30000 == 0 or batch_count == total_to_process:
             pct = round(batch_count / total_to_process * 100, 1)
             push_log(f"STRM 索引生成进度: {batch_count}/{total_to_process} ({pct}%) - 已新建: {v_created}, 跳过已有: {v_skipped}")
 
-    push_log(f"🎉 全量 STRM 生成完成！新增: {v_created}，跳过已有: {v_skipped}，清理过期: {v_deleted}")
+    push_log(f"🎉 全量 STRM 生成完成！新增: {v_created}，修复路径: {v_repaired}，跳过已有: {v_skipped}，清理过期: {v_deleted}")
     return v_created, v_skipped, v_deleted
 
 # ----------------- 二级页面：父子直属结构 100% 精准 CID 映射引擎 -----------------
@@ -740,12 +819,22 @@ def process_single_category_job(job: dict):
                 m = re.search(r'\(([^)]+)\)$', base_fn)
                 raw_ext = ('.' + m.group(1).lower()) if m else '.mp4'
                 ext = m.group(1) if m else 'mp4'
-                is_sub = raw_ext in COMPREHENSIVE_SUBTITLE_EXTS
+                strm_full_path = os.path.join(root, sf)
+                is_sub = is_subtitle_strm(strm_full_path, sf)
                 
                 poster = os.path.join(root, f"{base_fn}-poster.jpg")
                 nfo = os.path.join(root, f"{base_fn}.nfo")
                 has_p = os.path.exists(poster) and os.path.getsize(poster) > 1000
-                has_n = os.path.exists(nfo)
+                # ASMR 等普通专区的“有 NFO”与“内容已完成”是两个概念；
+                # 这里只统计文件是否存在，避免把“缺少流信息”误报成“缺少 NFO”。
+                has_n = os.path.exists(nfo) and os.path.getsize(nfo) > 0
+                if has_n:
+                    try:
+                        with open(nfo, "r", encoding="utf-8-sig", errors="ignore") as nf:
+                            nfo_text = nf.read()
+                        has_n = "<movie" in nfo_text.lower() and "<title" in nfo_text.lower()
+                    except Exception:
+                        has_n = False
                 has_s = has_streamdetails_in_nfo(nfo) if has_n else False
                 
                 # 字幕文件不计入待补封面和待补 NFO 统计
@@ -793,25 +882,32 @@ def process_single_category_job(job: dict):
         if processed_count >= target_limit: break
         if gov_progress["is_paused_for_captcha"]: break
         
-        sub_need_work = [it for it in items if ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
+        sub_need_work = [it for it in items if not it.get("is_sub", False) and ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
         if not sub_need_work:
             continue
             
         sub_folder_name = os.path.basename(folder_path) or category_name
-        sample_files = [x["base_name"] for x in items]
+        # AI 必须看到从 TreeStrms 根开始的完整目录层级，不能只看到当前末级目录名。
+        # 例如：成人/舞蹈/精舞社/精舞社 可涵 第1期/4K竖版_11.strm
+        output_root = os.path.abspath(cfg.get("default_output", "/Movies/TreeStrms"))
+        folder_rel_path = os.path.relpath(folder_path, output_root)
+        sample_files = [
+            os.path.relpath(x["strm_path"], output_root)
+            for x in items
+        ]
         
         # 1. 智能 AI 审批
         needs_nfo = any(not it["has_nfo"] for it in items)
         ai_res = None
         current_ai_cfg = load_config().get("ai_governance", ai_cfg)
         if needs_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
-            ai_res = call_ai_auditor(f"{category_name} - {sub_folder_name}", sample_files, current_ai_cfg)
+            ai_res = call_ai_auditor(folder_rel_path, sample_files, current_ai_cfg)
             if ai_res:
                 gov_progress["ai_batches_done"] += 1
                 push_log(f"🤖 [{sub_folder_name}] AI 审批就绪: 分类={ai_res.get('genre')}")
 
         # 过滤本目录下真正需要处理的条目
-        active_items = [it for it in items if ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
+        active_items = [it for it in items if not it.get("is_sub", False) and ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
         if not active_items:
             continue
 
@@ -819,21 +915,30 @@ def process_single_category_job(job: dict):
         items_needing_nfo = [it for it in active_items if not it["has_nfo"]]
         file_ai_details = {}
         if items_needing_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
-            ai_batch_chunk = 30
+            # 使用配置中的批次大小，避免固定 30 个导致 AI 请求过于碎片化。
+            # 当前 config.json 为 100；保留正数校验，异常配置回退到 100。
+            try:
+                ai_batch_chunk = int(current_ai_cfg.get("batch_size", 100))
+            except (TypeError, ValueError):
+                ai_batch_chunk = 100
+            if ai_batch_chunk <= 0:
+                ai_batch_chunk = 100
             for i in range(0, len(items_needing_nfo), ai_batch_chunk):
                 batch_slice = items_needing_nfo[i:i + ai_batch_chunk]
                 # 将 相对路径（含各级子目录分类上下文）+ 文件名 一并提供给大模型
                 batch_items_payload = []
                 for x in batch_slice:
-                    rel_to_cat = os.path.relpath(x["strm_path"], os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人"))
-                    batch_items_payload.append(f"{x['base_name']} (路径层级: {rel_to_cat})")
-                names_to_audit = [x["base_name"] for x in batch_slice]
-                push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼文件名与路径关键词 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
-                chunk_res = call_ai_item_auditor(batch_items_payload, f"{category_name} - {sub_folder_name}", current_ai_cfg)
+                    rel_to_root = os.path.relpath(x["strm_path"], output_root)
+                    batch_items_payload.append(rel_to_root)
+                names_to_audit = [os.path.relpath(x["strm_path"], output_root) for x in batch_slice]
+                push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼完整路径 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
+                chunk_res = call_ai_item_auditor(batch_items_payload, folder_rel_path, current_ai_cfg)
                 if chunk_res:
                     # 兼容返回 key 为 base_name 或者带路径的原始 payload
                     for k, v in chunk_res.items():
                         clean_k = k.split(" (路径层级:")[0].strip()
+                        # 新格式返回完整路径；兼容旧模型仍返回带说明后缀的 key。
+                        clean_k = clean_k.strip()
                         file_ai_details[clean_k] = v
                         file_ai_details[k] = v
 
@@ -855,7 +960,12 @@ def process_single_category_job(job: dict):
                 meta = extract_rule_tags(rel_p)
                 
                 # 优先注入大模型针对该单文件的个性化提炼结果
-                item_ai = file_ai_details.get(it["base_name"]) or file_ai_details.get(video_name)
+                item_rel_path = os.path.relpath(it["strm_path"], output_root)
+                item_ai = (
+                    file_ai_details.get(item_rel_path)
+                    or file_ai_details.get(it["base_name"])
+                    or file_ai_details.get(video_name)
+                )
                 if item_ai and isinstance(item_ai, dict):
                     if item_ai.get("clean_title"):
                         meta["title"] = item_ai.get("clean_title")
@@ -880,9 +990,9 @@ def process_single_category_job(job: dict):
                 it["has_nfo"] = True
                 studio_tag = f"[{meta.get('studio')}]" if meta.get('studio') else ""
                 genre_tag = f"/{meta.get('genres', [''])[0]}" if meta.get('genres') else ""
-                push_log(f"📝 [生成NFO] 【{video_name[:26]}】元数据就绪 {studio_tag}{genre_tag} (封面:{'已存在' if it['has_poster'] else '待抽取'}, 累计NFO: {gov_progress['nfos_generated']})")
+                push_log(f"📝 [生成NFO] 【{video_name}】元数据就绪 {studio_tag}/{genre_tag} (封面:{'已存在' if it['has_poster'] else '待抽取'}, 累计NFO: {gov_progress['nfos_generated']})")
             elif probe_streams and not has_streamdetails_in_nfo(it["nfo_path"]):
-                push_log(f"📋 [核验NFO] 【{video_name[:26]}】发现历史NFO存在但缺少音视频流，已加入深度补流队列！")
+                push_log(f"📋 [核验NFO] 【{video_name}】发现历史NFO存在但缺少音视频流，已加入深度补流队列！")
 
             # 2. 判定是否需要进入 CD2 探针 / 抽封面队列
             needs_poster = extract_covers and not it["has_poster"]
@@ -898,30 +1008,46 @@ def process_single_category_job(job: dict):
                 raw_t, p_path, th_path, nfo_p, v_name, do_poster, reason = task
                 try:
                     if do_poster:
-                        ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p)
+                        diagnostic = {}
+                        ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p, diagnostic=diagnostic)
                         if ok:
                             with gov_lock:
                                 gov_progress["covers_extracted"] += 1
                                 gov_progress["recent_success_streak"] += 1
-                                push_log(f"📸 [补齐封面] 【{v_name[:26]}】({reason}) ➔ 成功提取居中黄金封面并注入4K/AAC/大小！(已补封面: {gov_progress['covers_extracted']} 张)")
+                                push_log(f"📸 [补齐封面] 【{v_name}】({reason}) ➔ 成功提取居中黄金封面并注入4K/AAC/大小！(已补封面: {gov_progress['covers_extracted']} 张)")
+                        else:
+                            detail = diagnostic.get("reason", "未知失败")
+                            if diagnostic.get("detail"):
+                                detail += f"：{diagnostic['detail']}"
+                            if diagnostic.get("probe_returncode") is not None:
+                                detail += f"；ffprobe返回码={diagnostic['probe_returncode']}"
+                            if diagnostic.get("probe_stderr"):
+                                detail += f"；stderr={diagnostic['probe_stderr']}"
+                            detail += f"；STRM目标={raw_t}；本地路径={raw_t.replace('/movies/', '/Movies/', 1)}"
+                            push_log(f"⚠️ [补齐封面失败] 【{v_name}】({reason}) ➔ {detail[:2200]}")
                     else:
                         # 封面已有，仅需深度探针补充音视频流信息与大小
                         host_target = raw_t
                         if host_target.startswith('/movies/'):
                             host_target = '/Movies/' + host_target[8:]
-                        m_info = probe_media_info(host_target, timeout_sec=18)
+                        m_info = probe_media_info(host_target, timeout_sec=35)
                         if update_nfo_with_streamdetails(nfo_p, m_info):
                             with gov_lock:
                                 gov_progress["recent_success_streak"] += 1
                                 v_str = f"{m_info.get('video', {}).get('width')}x{m_info.get('video', {}).get('height')}"
                                 a_str = f"{m_info.get('audio', {}).get('codec', 'audio')} {m_info.get('audio', {}).get('channels', 2)}ch"
                                 size_mb = round(m_info.get('filesize', 0) / (1024 * 1024), 1)
-                                push_log(f"🔍 [深度补流] 【{v_name[:24]}】➔ 成功补全流信息与大小: {v_str}, {a_str}, 大小:{size_mb}MB, 时长:{round(m_info.get('duration', 0))}s")
+                                push_log(f"🔍 [深度补流] 【{v_name}】➔ 成功补全流信息与大小: {v_str}, {a_str}, 大小:{size_mb}MB, 时长:{round(m_info.get('duration', 0))}s")
                         else:
-                            push_log(f"⚠️ [探针重试中] 【{v_name[:24]}】CD2响应延迟或超时，保留原NFO绝不污染，留待后续复读")
-                except Exception:
-                    pass
+                            push_log(f"⚠️ [探针重试中] 【{v_name}】CD2响应延迟或超时，保留原NFO绝不污染，留待后续复读")
+                except Exception as exc:
+                    push_log(f"⚠️ [治理条目异常] 【{v_name}】({reason}) ➔ {type(exc).__name__}: {str(exc)[:500]}")
+                finally:
+                    # CD2/FUSE 严格串行慢牛，避免并发 Range 请求触发 115 风控。
+                    time.sleep(max(MIN_SAFE_DELAY, current_delay))
 
+            # 即使配置误写成更高值，也强制单线程访问 CD2 挂载点。
+            worker_threads = 1
             with ThreadPoolExecutor(max_workers=worker_threads) as pool:
                 list(pool.map(_extract_worker, work_tasks))
                     
@@ -930,19 +1056,24 @@ def process_single_category_job(job: dict):
     push_log(done_msg)
     send_telegram_alert(f"✅ [TreeSTRM 完成通知]\n{done_msg}")
     
-    # 动态更新全量底账缓存中该分类的 nfo_count 和 cover_count，保证 UI 刷新立即可见
+    # 动态更新全量底账缓存中该分类的真实物理统计，保证 UI 刷新立即可见与 100% 准确
     try:
+        from engine.scanner import scan_single_category
         cache_file = os.path.join(DATA_DIR, "categories_cache.json")
+        cat_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人", category_name)
+        fresh_stat = scan_single_category(cat_dir)
+        c_map = {}
         if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8") as cf:
-                c_map = json.load(cf)
-            if category_name in c_map:
-                c_map[category_name]["nfo_count"] = c_map[category_name].get("nfo_count", 0) + gov_progress.get("nfos_generated", 0)
-                c_map[category_name]["cover_count"] = c_map[category_name].get("cover_count", 0) + gov_progress.get("covers_extracted", 0)
-                with open(cache_file, "w", encoding="utf-8") as cf:
-                    json.dump(c_map, cf, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+            try:
+                with open(cache_file, "r", encoding="utf-8") as cf:
+                    c_map = json.load(cf)
+            except Exception:
+                pass
+        c_map[category_name] = fresh_stat
+        with open(cache_file, "w", encoding="utf-8") as cf:
+            json.dump(c_map, cf, ensure_ascii=False, indent=2)
+    except Exception as e:
+        push_log(f"⚠️ 更新专区底账缓存异常: {e}")
 
     try:
         from services.emby_client import EmbyClient
@@ -1405,7 +1536,7 @@ def delete_rule_api(rule_id: str):
     return {"status": "ok"}
 
 @app.get("/api/categories")
-def get_categories():
+def get_categories(refresh: bool = False):
     cfg = load_config()
     root_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人")
     protected_set = set(cfg.get("protected_categories", DEFAULT_PROTECTED_CATEGORIES))
@@ -1419,10 +1550,19 @@ def get_categories():
     running_cat = current_running_job.get("category") if current_running_job else None
     queued_cats = [q.get("category") for q in governance_queue]
     
-    # 优先使用秒级全量底账缓存
     cache_file = os.path.join(DATA_DIR, "categories_cache.json")
     cached_map = {}
-    if os.path.exists(cache_file):
+
+    # 若请求强制刷新或缓存文件不存在，直接触发极速物理盘点并回写缓存
+    if refresh or not os.path.exists(cache_file):
+        try:
+            from engine.scanner import sync_cache_to_disk
+            cached_map = sync_cache_to_disk(cache_file, root_dir)
+            push_log("🔄 [底账校准] 已完成全盘极速物理盘点，专区底账已 100% 刷新对齐！")
+        except Exception as e:
+            push_log(f"⚠️ 物理盘点失败: {e}")
+
+    if not cached_map and os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as cf:
                 cached_map = json.load(cf)
