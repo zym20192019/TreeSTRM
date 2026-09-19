@@ -15,6 +15,15 @@ from typing import List, Tuple, Dict
 from core.config import COMPREHENSIVE_VIDEO_EXTS, COMPREHENSIVE_SUBTITLE_EXTS
 from core.events import push_log
 
+def _tree_entry_name(line: str) -> str:
+    """只移除 115 树格式的一个结构分隔横杠，保留真实首横杠。"""
+    value = str(line or "").replace("\ufeff", "").rstrip("\r\n")
+    value = re.sub(r"^[|\s]*", "", value)
+    if value.startswith("-"):
+        value = value[1:]
+    return value.strip()
+
+
 def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs: bool = True) -> Tuple[List[str], List[str], Dict[str, int]]:
     """流式合并软换行并解析目录树结构"""
     push_log("正在解析目录树并构建 1:1 资产拓扑...")
@@ -22,31 +31,44 @@ def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs:
     current_line = ''
     for raw_line in io.StringIO(str(content or "")):
         line = str(raw_line or "").replace("\ufeff", "").rstrip("\r\n")
-        if not line.strip():
+        if not line:
             continue
         if line.startswith('|') or line.startswith('﻿|'):
             if current_line:
                 clean_lines.append(current_line)
             current_line = line
         else:
-            current_line += ' ' + line.strip()
+            # 与 app.py 保持一致：软换行属于同一文件名的空格边界。
+            current_line += " " + line.lstrip(" ")
     if current_line:
         clean_lines.append(current_line)
+
+    line_levels = [l.count("|") for l in clean_lines]
+    num_lines = len(clean_lines)
 
     path_stack = {}
     matched_videos = []
     matched_subs = []
     ext_stats = {}
 
-    for line in clean_lines:
-        level = line.count("|")
-        clean_name = re.sub(r"^[|\s—\-]+", "", line).strip()
+    for i in range(num_lines):
+        line = clean_lines[i]
+        level = line_levels[i]
+        clean_name = _tree_entry_name(line)
         if not clean_name:
             continue
 
         for stale_level in [k for k in path_stack.keys() if k > level]:
             path_stack.pop(stale_level, None)
-        path_stack[level] = clean_name
+
+        # 核心修复：115 目录树把单层目录/文件名中的全角或原生斜杠打印为半角 /
+        # 但在文件系统路径中，单层名字内部的 / 必须替换为全角 ／ 避免被误切分成多级不存在的虚拟子目录
+        clean_name_escaped = clean_name.replace('/', '／')
+        path_stack[level] = clean_name_escaped
+
+        # 智能判定：若下一行层级更深，说明当前项是目录（避免类似 1(2).mp4 命名的历史空文件夹被误当成视频生成 STRM）
+        if i + 1 < num_lines and line_levels[i + 1] > level:
+            continue
 
         parts = [path_stack[d] for d in range(level + 1) if d in path_stack]
         if parts and parts[0] in ['根目录', 'ROOT', '']:
@@ -118,6 +140,7 @@ def sync_strms_pure_1to1(
     v_created = 0
     v_skipped = 0
     v_deleted = 0
+    v_repaired = 0
 
     if auto_cleanup and len(expected_strms) > 0:
         orphan_strms = existing_local_strms - set(expected_strms.keys())
@@ -147,7 +170,17 @@ def sync_strms_pure_1to1(
             except Exception:
                 pass
         else:
-            v_skipped += 1
+            try:
+                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+                    existing_content = f.read().strip()
+                if existing_content != content:
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    v_repaired += 1
+                else:
+                    v_skipped += 1
+            except Exception:
+                v_skipped += 1
 
         if batch_count % 30000 == 0 or batch_count == total_to_process:
             pct = round(batch_count / total_to_process * 100, 1)
@@ -155,5 +188,5 @@ def sync_strms_pure_1to1(
             if progress_callback:
                 progress_callback(batch_count, total_to_process, v_created, v_skipped, v_deleted)
 
-    push_log(f"🎉 全量 STRM 生成完成！新增: {v_created}，跳过已有: {v_skipped}，清理过期: {v_deleted}")
+    push_log(f"🎉 全量 STRM 生成完成！新增: {v_created}，修复路径: {v_repaired}，跳过已有: {v_skipped}，清理过期: {v_deleted}")
     return v_created, v_skipped, v_deleted

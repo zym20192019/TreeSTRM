@@ -18,7 +18,7 @@ from typing import Optional, Dict, Tuple
 from xml.etree import ElementTree as ET
 
 
-def probe_media_info(video_path: str, timeout_sec: int = 18) -> Dict:
+def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optional[Dict] = None) -> Dict:
     """利用轻量 ffprobe 提取全量音视频媒体信息与文件大小，内置重试与强有效性校验"""
     info = {
         "filesize": 0,
@@ -45,9 +45,14 @@ def probe_media_info(video_path: str, timeout_sec: int = 18) -> Dict:
         video_path
     ]
 
+    last_error = ""
     for attempt in range(2):
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+            if diagnostic is not None:
+                diagnostic["probe_returncode"] = res.returncode
+                diagnostic["probe_stderr"] = (res.stderr or "").strip()[-1000:]
+                diagnostic["probe_attempt"] = attempt + 1
             if res.returncode == 0 and res.stdout:
                 data = json.loads(res.stdout)
                 fmt = data.get("format", {})
@@ -90,8 +95,26 @@ def probe_media_info(video_path: str, timeout_sec: int = 18) -> Dict:
                 if info["video"].get("width", 0) > 0 and info["duration"] > 0:
                     info["valid"] = True
                     break
-        except Exception:
-            time.sleep(1)
+            if res.returncode != 0:
+                last_error = (res.stderr or "").strip()[-1000:]
+        except subprocess.TimeoutExpired as exc:
+            last_error = f"TimeoutExpired after {timeout_sec}s"
+            if diagnostic is not None:
+                diagnostic["probe_timeout"] = True
+                diagnostic["probe_attempt"] = attempt + 1
+                diagnostic["probe_stderr"] = last_error
+            if attempt == 0:
+                time.sleep(1)
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if diagnostic is not None:
+                diagnostic["probe_exception"] = last_error
+                diagnostic["probe_attempt"] = attempt + 1
+            if attempt == 0:
+                time.sleep(1)
+
+    if diagnostic is not None and last_error and not diagnostic.get("probe_stderr"):
+        diagnostic["probe_stderr"] = last_error
 
     return info
 
@@ -161,15 +184,21 @@ def extract_cover_by_cd2(
     seek_sec: int = 0,
     nfo_path: Optional[str] = None,
     max_threads: int = 2,
-    timeout_sec: int = 35
+    timeout_sec: int = 35,
+    diagnostic: Optional[Dict] = None
 ) -> bool:
     """走 CD2 本地挂载 Fast Seek 进行高效降权抽帧，顺便提取完整元数据反哺 NFO"""
+    diagnostic = diagnostic if diagnostic is not None else {}
     try:
         host_target = target_path
         if host_target.startswith('/movies/'):
             host_target = '/Movies/' + host_target[8:]
 
         if not os.path.exists(host_target):
+            diagnostic["reason"] = "目标路径不存在"
+            return False
+        if os.path.isdir(host_target):
+            diagnostic["reason"] = "目标实际是目录"
             return False
 
         # 确保输出目录存在
@@ -178,7 +207,20 @@ def extract_cover_by_cd2(
             os.makedirs(out_dir, exist_ok=True)
 
         # 1. 轻量级快速探针 (顺带读取大小、总时长、视音频流)
-        media_info = probe_media_info(host_target, timeout_sec=8)
+        media_diag = {}
+        media_info = probe_media_info(host_target, timeout_sec=35, diagnostic=media_diag)
+        if not media_info.get("valid"):
+            if media_diag.get("probe_timeout"):
+                diagnostic["reason"] = "CD2读取超时"
+                diagnostic["detail"] = "冷文件探针在限定时间内未返回，未判定为视频损坏"
+            elif media_diag.get("probe_returncode", 0) not in (0, None):
+                diagnostic["reason"] = "媒体容器解析失败"
+                diagnostic["detail"] = "ffprobe 返回非零状态，未取得有效媒体流"
+            else:
+                diagnostic["reason"] = "媒体探针结果无有效视频流"
+                diagnostic["detail"] = "ffprobe返回成功但未取得有效时长或视频宽高"
+            diagnostic.update(media_diag)
+            return False
 
         # 2. 黄金截取点策略：
         # 对于 .webm 格式 (缺乏索引，远程seek极慢)，优先截取片头 3-5 秒，避免拉取数百兆远程数据
@@ -193,7 +235,8 @@ def extract_cover_by_cd2(
         elif real_duration > 10:
             target_seek = int(real_duration / 2)
         else:
-            target_seek = 3
+            # 短视频必须落在实际时长内，不能固定跳到第 3 秒。
+            target_seek = max(0, min(3, int(real_duration / 2)))
 
         s_time = time.strftime('%H:%M:%S', time.gmtime(target_seek))
 
@@ -207,11 +250,11 @@ def extract_cover_by_cd2(
             '-noaccurate_seek',
             '-i', host_target,
             '-frames:v', '1',
-            '-vf', 'scale=min(1080\\,iw):-2',
+            '-vf', 'scale=w=min(1080\\,iw):h=-2',
             '-q:v', '3',
             poster_path
         ]
-        subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
+        first_res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
 
         # 若截取失败，回退到片头 0.5s 保底
         if not os.path.exists(poster_path) or os.path.getsize(poster_path) < 1000:
@@ -220,15 +263,21 @@ def extract_cover_by_cd2(
                 'ionice', '-c', '3',
                 'ffmpeg', '-y',
                 '-threads', str(max_threads),
-                '-ss', '00:00:00.5',
+                '-ss', '00:00:00',
                 '-noaccurate_seek',
                 '-i', host_target,
                 '-frames:v', '1',
-                '-vf', 'scale=min(1080\\,iw):-2',
+                '-vf', 'scale=w=min(1080\\,iw):h=-2',
                 '-q:v', '3',
                 poster_path
             ]
-            subprocess.run(cmd_fallback, capture_output=True, timeout=timeout_sec)
+            fallback_res = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=timeout_sec)
+            if fallback_res.returncode != 0:
+                diagnostic["reason"] = "FFmpeg 抽帧失败"
+                diagnostic["detail"] = (fallback_res.stderr or "").strip()[-180:]
+        elif first_res.returncode != 0:
+            diagnostic["reason"] = "FFmpeg 抽帧失败"
+            diagnostic["detail"] = (first_res.stderr or "").strip()[-180:]
 
         # 4. 验证封面并顺带回写 NFO
         if os.path.exists(poster_path) and os.path.getsize(poster_path) > 1000:
@@ -256,6 +305,13 @@ def extract_cover_by_cd2(
                     update_nfo_with_streamdetails(nfo_path, media_info)
 
             return True
+        if not diagnostic.get("reason"):
+            diagnostic["reason"] = "未生成有效封面文件"
         return False
-    except Exception:
+    except subprocess.TimeoutExpired:
+        diagnostic["reason"] = "FFmpeg 抽帧超时"
+        return False
+    except Exception as exc:
+        diagnostic["reason"] = "抽帧异常"
+        diagnostic["detail"] = f"{type(exc).__name__}: {str(exc)[:140]}"
         return False

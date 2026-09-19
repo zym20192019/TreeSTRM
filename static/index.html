@@ -264,7 +264,7 @@
                                 <input type="checkbox" id="chk-probe-streams" class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5">
                                 <span>深度补充音视频流信息</span>
                             </label>
-                            <button id="btn-refresh-categories" onclick="loadCategories()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
+                            <button id="btn-refresh-categories" onclick="loadCategories(true)" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
                                 <i class="bi bi-arrow-clockwise"></i>
                                 <span>刷新列表</span>
                             </button>
@@ -525,13 +525,14 @@
             }
         }
 
-        async function loadCategories() {
+        async function loadCategories(forceRefresh = false) {
             const tbody = document.getElementById('categories-tbody');
             const btn = document.getElementById('btn-refresh-categories');
             const icon = btn ? btn.querySelector('i') : null;
             if (icon) icon.classList.add('animate-spin');
             try {
-                const res = await fetch('/api/categories');
+                const url = forceRefresh ? '/api/categories?refresh=true' : '/api/categories';
+                const res = await fetch(url);
                 const data = await res.json();
                 if (!data || data.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="6" class="px-6 py-8 text-center text-slate-500">暂无专区数据</td></tr>';

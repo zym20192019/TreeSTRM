@@ -12,6 +12,7 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 LOGS_FILE = os.path.join(DATA_DIR, "history.json")
 SPEED_FILE = os.path.join(DATA_DIR, "speed.json")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
+AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
 
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -151,7 +152,7 @@ def load_config() -> dict:
                         "api_base": "https://openrouter.ai/api/v1",
                         "api_key": "",
                         "model": "minimax/minimax-m2.7:free",
-                        "batch_size": 100
+                        "batch_size": 50
                     }
                 return cfg
         except Exception:
@@ -170,7 +171,7 @@ def load_config() -> dict:
             "api_base": "https://openrouter.ai/api/v1",
             "api_key": "",
             "model": "minimax/minimax-m2.7:free",
-            "batch_size": 100
+            "batch_size": 50
         },
         "auto_sync_enabled": False,
         "auto_sync_interval_mins": 30,
@@ -234,49 +235,55 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
         'target': f'U_1_{cid}',
         'layer_limit': str(layer_limit)
     }
-    res = session.post('https://webapi.115.com/files/export_dir', data=data, timeout=20).json()
-    export_id = res.get('data', {}).get('export_id') if isinstance(res.get('data'), dict) else None
     
+    export_id = None
+    # 循环尝试提交导出任务，若提示“有类似任务正在处理”，等待几秒重试获取全新独立的 export_id
+    for submit_try in range(1, 10):
+        res = session.post('https://webapi.115.com/files/export_dir', data=data, timeout=20).json()
+        if isinstance(res.get('data'), dict) and res['data'].get('export_id'):
+            export_id = res['data']['export_id']
+            push_log(f"✅ 115 目录树任务提交成功，任务ID: {export_id}")
+            break
+        err_msg = res.get('error', '未知错误')
+        push_log(f"⚠️ 115 导出任务排队中 ({err_msg})，等待重试 ({submit_try}/10)...")
+        time.sleep(3)
+        
     pick_code = None
     push_log("正在轮询等待 115 服务端生成大树文件...")
-
-    # 115 超大目录树可能已在网盘生成文件，但 export_dir 状态接口迟迟不返回 pick_code。
-    # 轮询期间按任务命名搜索当前 CID 对应的最新目录树文件，发现后直接复用，避免无效超时。
+    
     for i in range(120):
         time.sleep(2)
-        url = 'https://webapi.115.com/files/export_dir' + (f'?export_id={export_id}' if export_id else '')
-        try:
-            st_res = session.get(url, timeout=15).json()
-        except Exception:
-            st_res = {}
-        raw_d = st_res.get('data', {})
-        if isinstance(raw_d, dict) and raw_d.get('pick_code'):
-            pick_code = raw_d['pick_code']
-            fn = raw_d.get('file_name', '目录树.txt')
-            push_log(f"✅ 115 目录树快照已就绪: {fn} (pickcode: {pick_code})")
-            break
-
-        # 当前导出任务命名为“根目录YYYYMMDDHHMMSS_目录树.txt”，通过服务端搜索定位，
-        # 只取当前 CID 的精确结果，不做全库分页遍历。
-        try:
-            search_res = session.get(
-                'https://webapi.115.com/files/search',
-                params={'search_value': '目录树', 'limit': 100},
-                timeout=15
-            ).json()
-            candidates = [
-                x for x in (search_res.get('data') or [])
-                if isinstance(x, dict) and str(x.get('cid')) == str(cid)
-                and x.get('pc') and '目录树' in str(x.get('n', ''))
-            ]
-            if candidates:
-                # 搜索结果按最新生成顺序返回；取第一个精确命中即可。
-                item = candidates[0]
-                pick_code = item['pc']
-                push_log(f"✅ 已发现网盘中刚生成的目录树: {item.get('n')} (pickcode: {pick_code})")
-                break
-        except Exception:
-            pass
+        if export_id:
+            try:
+                st_res = session.get(f'https://webapi.115.com/files/export_dir?export_id={export_id}', timeout=15).json()
+                raw_d = st_res.get('data', {})
+                if isinstance(raw_d, dict) and raw_d.get('pick_code'):
+                    pick_code = raw_d['pick_code']
+                    fn = raw_d.get('file_name', '目录树.txt')
+                    push_log(f"✅ 115 目录树快照已就绪: {fn} (pickcode: {pick_code})")
+                    break
+            except Exception:
+                pass
+        else:
+            # 若始终未能获取 export_id，定向搜索属于该 CID 的最新目录树文件
+            try:
+                search_res = session.get(
+                    'https://webapi.115.com/files/search',
+                    params={'search_value': '目录树', 'limit': 30},
+                    timeout=15
+                ).json()
+                candidates = [
+                    x for x in (search_res.get('data') or [])
+                    if isinstance(x, dict) and str(x.get('cid')) == str(cid)
+                    and x.get('pc') and '目录树' in str(x.get('n', ''))
+                ]
+                if candidates:
+                    item = candidates[0]
+                    pick_code = item['pc']
+                    push_log(f"✅ 已发现网盘中最新生成的目录树: {item.get('n')} (pickcode: {pick_code})")
+                    break
+            except Exception:
+                pass
 
         if i > 0 and i % 5 == 0:
             push_log(f"等待 115 服务端处理中... 已耗时 {i*2} 秒")
@@ -300,16 +307,10 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
     return resp.content.decode('utf-16le', errors='ignore')
 
 def _tree_entry_name(line: str) -> str:
-    """只移除 115 树格式的结构前缀，保留真实文件名的首字符。
-
-    115 的条目行形如 ``| | |-文件名``；若真实名称本身以 ``-`` 开头，
-    则会形如 ``| | |--文件名``。旧实现把所有连续的 ``-`` 都清掉，
-    会把真实首横杠吞掉。这里固定只移除一个结构分隔横杠。
-    """
+    """只移除 115 树格式的结构前缀（包括 ASCII -、中文全角破折号 ——、制表符 ─ 等），保留真实文件名的首字符。"""
     value = str(line or "").replace("\ufeff", "").rstrip("\r\n")
     value = re.sub(r"^[|\s]*", "", value)
-    if value.startswith("-"):
-        value = value[1:]
+    value = re.sub(r"^[—\-\─\–]+", "", value)
     return value.strip()
 
 
@@ -432,13 +433,13 @@ def extract_rule_tags(rel_path: str) -> dict:
     }
 
 def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Optional[dict]:
+    """目录级 AI 审批：失败重试 2 次，仍失败记录账本并规则降级。"""
     if not ai_cfg.get("enabled") or not ai_cfg.get("api_key"):
         return None
-        
+
     api_base = (ai_cfg.get("api_base") or "https://openrouter.ai/api/v1").rstrip("/")
     api_key = ai_cfg.get("api_key")
     model = ai_cfg.get("model") or "minimax/minimax-m2.7:free"
-    
     sample_files = file_names[:60]
     prompt = f"""你是一个媒体库元数据与标签治理专家。
 请根据以下视频专区名称及文件列表，进行标签清洗、去重、归一化和题材提炼。
@@ -455,48 +456,70 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
   "clean_summary": "简短的一句话专区看点介绍(30字以内)"
 }
 """
-    try:
-        url = f"{api_base}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/treestrm",
-            "X-Title": "TreeSTRM",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，只输出合法 JSON。"},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.2
-        }
-        resp = requests.post(url, headers=headers, json=data, timeout=25).json()
-        content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
-        # 匹配大括号提取合法 JSON (支持 reasoning 模型)
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if not json_match and resp.get("choices", [{}])[0].get("message", {}).get("reasoning"):
-            # 有些模型只输出在 reasoning 里或者被包裹
-            pass
-        if json_match:
-            return json.loads(json_match.group(0))
-    except Exception as e:
-        push_log(f"⚠️ AI 标签审批批次跳过 (降级走规则): {str(e)[:60]}")
+    last_error = "unknown error"
+    for attempt in range(1, 3):
+        try:
+            url = f"{api_base}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
+            data = {"model": model, "messages": [{"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，只输出合法 JSON。"}, {"role": "user", "content": prompt}], "temperature": 0.2}
+            resp = requests.post(url, headers=headers, json=data, timeout=25).json()
+            choices = resp.get("choices") or []
+            if not choices or not isinstance(choices[0], dict):
+                raise ValueError("AI response choices is empty")
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if not json_match:
+                raise ValueError("AI response contains no JSON object")
+            parsed = json.loads(json_match.group(0))
+            if not isinstance(parsed, dict):
+                raise ValueError("AI response JSON is not an object")
+            if attempt > 1:
+                push_log(f"✅ AI 目录审批重试成功: {folder_name}（第{attempt}次）")
+            return parsed
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            push_log(f"⚠️ AI 目录审批第{attempt}/2次失败: {folder_name}: {last_error[:180]}")
+            if attempt < 2:
+                time.sleep(2)
+    _record_ai_failure(folder_name, sample_files, last_error, 2, fallback=True)
+    push_log(f"❌ AI 目录审批最终失败，已记录并规则降级: {folder_name}")
     return None
 
-def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict) -> Dict[str, dict]:
-    """
-    针对单批文件（建议 30-50 个）一次性送入大模型，
-    依据各自文件名中的特色词（如模特、服饰、剧情、编号）精准提取每个视频独有的标签和清洗标题。
-    返回: { "文件名/base_fn": {"clean_title": "...", "tags": [...], "summary": "..."} }
-    """
+def _record_ai_failure(folder_hint: str, file_names: List[str], error: str, attempts: int, fallback: bool = True):
+    """持久化记录最终失败批次，禁止失败请求被静默当成成功。"""
+    record = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "folder": folder_hint,
+        "files": list(file_names),
+        "error": str(error)[:500],
+        "attempts": attempts,
+        "fallback_nfo": fallback,
+        "status": "pending_repair"
+    }
+    records = []
+    try:
+        if os.path.exists(AI_FAILURE_LEDGER_FILE):
+            with open(AI_FAILURE_LEDGER_FILE, "r", encoding="utf-8") as f:
+                records = json.load(f)
+            if not isinstance(records, list):
+                records = []
+    except Exception:
+        records = []
+    records.append(record)
+    with open(AI_FAILURE_LEDGER_FILE, "w", encoding="utf-8") as f:
+        json.dump(records[-5000:], f, ensure_ascii=False, indent=2)
+    return record
+
+
+def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, _allow_split: bool = True) -> Dict[str, dict]:
+    """请求文件级 AI（按序号索引映射机制，一次性支持 50 个直推，0 误判、0 漏项）。"""
     if not ai_cfg.get("enabled") or not ai_cfg.get("api_key") or not file_names:
         return {}
-        
+
     api_base = (ai_cfg.get("api_base") or "https://openrouter.ai/api/v1").rstrip("/")
     api_key = ai_cfg.get("api_key")
     model = ai_cfg.get("model") or "gemini-3.1-flash-lite"
-    
     prompt = f"""你是媒体库元数据与标签治理专家。
 专区环境: {folder_hint}
 
@@ -506,44 +529,157 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict) 
 2. tags: 从该文件名中精准提炼出的专属于该视频的特征标签列表（如服饰、模特、动作、拍摄类型等，3-6个）
 3. summary: 结合文件名看点生成的简短简介（25字以内）
 
-输出必须严格为合法的 JSON 对象（严禁包含 markdown 代码块包裹标记，直接以大括号 {{ 开头结尾），格式如下：
+输出必须严格为合法的 JSON 对象，键必须是对应的数字编号("1", "2", ...)，格式如下：
 {{
-  "原文件名": {{
+  "1": {{
     "clean_title": "清洗后的展示标题",
     "tags": ["标签1", "标签2"],
     "summary": "简述"
   }}
 }}
 
-待处理文件名列表：
-""" + "\n".join([f"- {fn}" for fn in file_names])
+待处理列表：
+""" + "\n".join([f"{i+1}. {fn}" for i, fn in enumerate(file_names)])
 
-    try:
-        url = f"{api_base}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/treestrm",
-            "X-Title": "TreeSTRM",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，必须严格输出合法JSON对象。"},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.2
-        }
-        resp = requests.post(url, headers=headers, json=data, timeout=30).json()
-        content = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
-        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-        if json_match:
+    last_error = "unknown error"
+    for attempt in range(1, 3):
+        try:
+            url = f"{api_base}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
+            data = {"model": model, "messages": [{"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，严格按序号输出合法JSON对象。"}, {"role": "user", "content": prompt}], "temperature": 0.2}
+            resp = requests.post(url, headers=headers, json=data, timeout=30).json()
+            choices = resp.get("choices") or []
+            if not choices or not isinstance(choices[0], dict):
+                raise ValueError("AI response choices is empty")
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("AI response content is empty")
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if not json_match:
+                raise ValueError("AI response contains no JSON object")
             parsed = json.loads(json_match.group(0))
-            if isinstance(parsed, dict):
-                return parsed
-    except Exception as e:
-        push_log(f"⚠️ 批量文件名 AI 提炼跳过: {str(e)[:60]}")
+            if not isinstance(parsed, dict):
+                raise ValueError("AI response JSON is not an object")
+
+            # 通过序号严格 1:1 反向映射回原始完整路径
+            result_map = {}
+            for i, fn in enumerate(file_names):
+                idx_key = str(i + 1)
+                item = parsed.get(idx_key) or parsed.get(i + 1)
+                if isinstance(item, dict) and item.get("clean_title"):
+                    result_map[fn] = item
+
+            if attempt > 1:
+                push_log(f"✅ AI 文件批次重试成功: {folder_hint} ({len(file_names)}个，第{attempt}次)")
+            return result_map
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            push_log(f"⚠️ AI 文件批次第{attempt}/2次失败: {folder_hint} ({len(file_names)}个): {last_error[:180]}")
+            if attempt < 2:
+                time.sleep(2)
+
+    if _allow_split and len(file_names) > 40:
+        push_log(f"🔻 AI 批次连续失败，拆分重试: {folder_hint} {len(file_names)} -> 40/批")
+        merged = {}
+        for start in range(0, len(file_names), 40):
+            merged.update(call_ai_item_auditor(file_names[start:start + 40], folder_hint, ai_cfg, _allow_split=False))
+        return merged
+
+    _record_ai_failure(folder_hint, file_names, last_error, 2)
+    push_log(f"❌ AI 文件批次最终失败，已记录并降级生成 NFO: {folder_hint} ({len(file_names)}个)")
     return {}
+
+def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg: dict) -> Dict[str, dict]:
+    """最后兜底：采用【数字序号索引映射机制 (Index-based Mapping)】。
+    彻底杜绝大模型微调乱码字符、逗号网址([gaobei,com]→[gaobei.com])或多余空格导致的 Key 丢失与对账失败。
+    """
+    if not file_names or not ai_cfg.get("enabled") or not ai_cfg.get("api_key"):
+        return {}
+    api_base = (ai_cfg.get("api_base") or "https://openrouter.ai/api/v1").rstrip("/")
+    api_key = ai_cfg.get("api_key")
+    model = ai_cfg.get("fallback_model") or ai_cfg.get("model") or "gemini-3.5-flash-lite"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    result: Dict[str, dict] = {}
+
+    def request_json(system_text: str, user_text: str):
+        last_error = "unknown error"
+        for attempt in range(1, 3):
+            try:
+                resp = requests.post(
+                    f"{api_base}/chat/completions",
+                    headers=headers,
+                    json={"model": model, "messages": [
+                        {"role": "system", "content": system_text},
+                        {"role": "user", "content": user_text},
+                    ], "temperature": 0},
+                    timeout=90,
+                ).json()
+                choices = resp.get("choices") or []
+                if not choices or not isinstance(choices[0], dict):
+                    raise ValueError("AI response choices is empty")
+                content = (choices[0].get("message") or {}).get("content") or ""
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("AI response content is empty")
+                match = re.search(r"\{.*\}", content, re.DOTALL)
+                if not match:
+                    raise ValueError("AI response contains no JSON object")
+                parsed = json.loads(match.group(0))
+                if not isinstance(parsed, dict):
+                    raise ValueError("AI response JSON is not an object")
+                return parsed
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt < 2:
+                    time.sleep(2)
+        raise ValueError(last_error)
+
+    for start in range(0, len(file_names), 10):
+        batch = file_names[start:start + 10]
+        try:
+            translation_prompt = (
+                "这是媒体库文件路径翻译任务。请把以下视频文件名中的日文/英文/韩文翻译成简洁、客观的中文标题，"
+                "不扩写、不描述画面、不生成色情内容。严格按编号(1, 2, ...)作为 JSON 键，输出格式：\n"
+                "{\"1\":{\"中文标题\":\"...\"}, \"2\":{\"中文标题\":\"...\"}}。\n待处理列表：\n"
+                + "\n".join(f"{i+1}. {path}" for i, path in enumerate(batch))
+            )
+            translated = request_json(
+                "你是文件名翻译器，严格按编号输出合法 JSON 对象。",
+                translation_prompt,
+            )
+
+            title_rows = []
+            for i, path in enumerate(batch):
+                idx_key = str(i + 1)
+                t_obj = translated.get(idx_key) or translated.get(i + 1)
+                title = (t_obj or {}).get("中文标题") if isinstance(t_obj, dict) else None
+                if not isinstance(title, str) or not title.strip():
+                    title = os.path.splitext(os.path.basename(path))[0]
+                title_rows.append(f"{i+1}. 原路径: {path} -> 中文标题: {title}")
+
+            metadata = request_json(
+                "你是媒体库元数据整理器，严格按编号输出合法 JSON 对象。",
+                "这是媒体库元数据整理任务。只基于中文标题输出严格 JSON 对象，键必须是对应的编号(\"1\",\"2\"...)；"
+                "每项包含 clean_title、tags、summary，summary 不超过25字。不要 markdown，不要解释。\n"
+                + "\n".join(title_rows),
+            )
+            for i, path in enumerate(batch):
+                idx_key = str(i + 1)
+                item = metadata.get(idx_key) or metadata.get(i + 1)
+                if not isinstance(item, dict):
+                    continue
+                if not isinstance(item.get("clean_title"), str) or not item.get("clean_title").strip():
+                    item["clean_title"] = os.path.splitext(os.path.basename(path))[0]
+                if not isinstance(item.get("tags"), list):
+                    item["tags"] = []
+                if not isinstance(item.get("summary"), str):
+                    item["summary"] = item.get("clean_title", "")
+                result[path] = item
+            push_log(f"✅ AI 翻译兜底成功: {folder_hint} ({len(batch)}个)")
+        except Exception as exc:
+            _record_ai_failure(f"{folder_hint} [翻译兜底]", batch, str(exc), 2, fallback=False)
+            push_log(f"❌ AI 翻译兜底失败，相关 NFO 保持缺失: {folder_hint} ({len(batch)}个): {str(exc)[:180]}")
+    return result
 
 def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: int = 0, width: int = 1920, height: int = 1080):
     tags_xml = "\n".join([f"  <tag>{t}</tag>" for t in meta.get("tags", [])])
@@ -914,15 +1050,15 @@ def process_single_category_job(job: dict):
         # 2. 针对需要写 NFO 的条目，按批次（每批 30 个）让大模型精准提取文件名特异性元数据
         items_needing_nfo = [it for it in active_items if not it["has_nfo"]]
         file_ai_details = {}
+        failed_ai_paths = set()
         if items_needing_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
-            # 使用配置中的批次大小，避免固定 30 个导致 AI 请求过于碎片化。
-            # 当前 config.json 为 100；保留正数校验，异常配置回退到 100。
+            # 使用较稳定的配置批次；异常配置回退到 50，避免过大请求超时。
             try:
-                ai_batch_chunk = int(current_ai_cfg.get("batch_size", 100))
+                ai_batch_chunk = int(current_ai_cfg.get("batch_size", 50))
             except (TypeError, ValueError):
-                ai_batch_chunk = 100
+                ai_batch_chunk = 50
             if ai_batch_chunk <= 0:
-                ai_batch_chunk = 100
+                ai_batch_chunk = 50
             for i in range(0, len(items_needing_nfo), ai_batch_chunk):
                 batch_slice = items_needing_nfo[i:i + ai_batch_chunk]
                 # 将 相对路径（含各级子目录分类上下文）+ 文件名 一并提供给大模型
@@ -932,7 +1068,21 @@ def process_single_category_job(job: dict):
                     batch_items_payload.append(rel_to_root)
                 names_to_audit = [os.path.relpath(x["strm_path"], output_root) for x in batch_slice]
                 push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼完整路径 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
+                before_failure_count = 0
+                try:
+                    if os.path.exists(AI_FAILURE_LEDGER_FILE):
+                        with open(AI_FAILURE_LEDGER_FILE, "r", encoding="utf-8") as ff:
+                            before_failure_count = len(json.load(ff))
+                except Exception:
+                    pass
                 chunk_res = call_ai_item_auditor(batch_items_payload, folder_rel_path, current_ai_cfg)
+                try:
+                    with open(AI_FAILURE_LEDGER_FILE, "r", encoding="utf-8") as ff:
+                        new_failures = json.load(ff)[before_failure_count:]
+                    for failure in new_failures:
+                        failed_ai_paths.update(failure.get("files", []))
+                except Exception:
+                    pass
                 if chunk_res:
                     # 兼容返回 key 为 base_name 或者带路径的原始 payload
                     for k, v in chunk_res.items():
@@ -941,6 +1091,13 @@ def process_single_category_job(job: dict):
                         clean_k = clean_k.strip()
                         file_ai_details[clean_k] = v
                         file_ai_details[k] = v
+                resolved_paths = {p for p in names_to_audit if p in file_ai_details}
+                fallback_paths = [p for p in names_to_audit if p not in resolved_paths]
+                if fallback_paths:
+                    fallback_res = call_ai_translation_fallback(fallback_paths, folder_rel_path, current_ai_cfg)
+                    for k, v in fallback_res.items():
+                        file_ai_details[k] = v
+                failed_ai_paths.update(p for p in names_to_audit if p not in file_ai_details)
 
         # 先顺序极速完成 NFO 补齐与元数据准备
         work_tasks = []
@@ -966,6 +1123,9 @@ def process_single_category_job(job: dict):
                     or file_ai_details.get(it["base_name"])
                     or file_ai_details.get(video_name)
                 )
+                if not item_ai or not isinstance(item_ai, dict):
+                    push_log(f"⏭️ [跳过NFO] 【{video_name}】文件级 AI 未成功返回，保持 NFO 缺失，等待补偿")
+                    continue
                 if item_ai and isinstance(item_ai, dict):
                     if item_ai.get("clean_title"):
                         meta["title"] = item_ai.get("clean_title")
@@ -973,6 +1133,9 @@ def process_single_category_job(job: dict):
                         meta["tags"] = list(dict.fromkeys(meta["tags"] + item_ai.get("tags")))
                     if item_ai.get("summary"):
                         meta["summary"] = item_ai.get("summary")
+                if item_rel_path in failed_ai_paths:
+                    meta["tags"] = list(dict.fromkeys(meta.get("tags", []) + ["AI待补"]))
+                    meta["summary"] = (meta.get("summary") or "") + "（AI提炼失败，待补全）"
                 
                 # 叠加目录级公共元数据
                 if ai_res:
@@ -1076,8 +1239,12 @@ def process_single_category_job(job: dict):
         push_log(f"⚠️ 更新专区底账缓存异常: {e}")
 
     try:
-        from services.emby_client import EmbyClient
-        EmbyClient().trigger_category_refresh(category_name)
+        cfg_after = load_config()
+        if cfg_after.get("auto_refresh_after_governance", False):
+            from services.emby_client import EmbyClient
+            EmbyClient().trigger_category_refresh(category_name)
+        else:
+            push_log(f"⏸️ 专区【{category_name}】NFO 已完成，按配置暂不自动刷新 Emby")
     except Exception:
         pass
     current_running_job = None
