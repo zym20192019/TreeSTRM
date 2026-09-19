@@ -48,7 +48,7 @@ class AIGovModel(BaseModel):
 
 class ConfigModel(BaseModel):
     cookie: str
-    default_prefix: str = "/movies/CloudDrive/115"
+    default_prefix: str = "http://23.19.231.70:5244/d/115"
     default_output: str = "/Movies/TreeStrms"
     layer_limit: int = 25
     sync_subtitles: bool = True
@@ -83,7 +83,7 @@ def load_config() -> dict:
             pass
     cfg = {
         "cookie": load_cookie_from_env(),
-        "default_prefix": "/movies/CloudDrive/115",
+        "default_prefix": "http://23.19.231.70:5244/d/115",
         "default_output": "/Movies/TreeStrms",
         "layer_limit": 25,
         "sync_subtitles": True,
@@ -98,7 +98,7 @@ def load_config() -> dict:
                 "name": "成人",
                 "cid": "3291659674416491425",
                 "output_dir": "/Movies/TreeStrms",
-                "prefix": "/movies/CloudDrive/115",
+                "prefix": "http://23.19.231.70:5244/d/115",
                 "sync_subtitles": True,
                 "auto_cleanup_orphan": True,
                 "enabled": True,
