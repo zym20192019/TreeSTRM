@@ -16,11 +16,10 @@ from core.config import COMPREHENSIVE_VIDEO_EXTS, COMPREHENSIVE_SUBTITLE_EXTS
 from core.events import push_log
 
 def _tree_entry_name(line: str) -> str:
-    """只移除 115 树格式的一个结构分隔横杠，保留真实首横杠。"""
+    """只移除 115 树格式的结构前缀（包括 ASCII -、中文全角破折号 ——、制表符 ─ 等），保留真实文件名的首字符。"""
     value = str(line or "").replace("\ufeff", "").rstrip("\r\n")
     value = re.sub(r"^[|\s]*", "", value)
-    if value.startswith("-"):
-        value = value[1:]
+    value = re.sub(r"^[—\-\─\–]+", "", value)
     return value.strip()
 
 
