@@ -49,6 +49,7 @@ class AIGovModel(BaseModel):
 class ConfigModel(BaseModel):
     cookie: str
     default_prefix: str = "http://23.19.231.70:5244/d/115"
+    cd2_mount_path: str = "/Movies/CloudDrive/115"
     default_output: str = "/Movies/TreeStrms"
     layer_limit: int = 25
     sync_subtitles: bool = True
@@ -78,12 +79,15 @@ def load_config() -> dict:
                     cfg["protected_categories"] = DEFAULT_PROTECTED_CATEGORIES
                 if "cover_threads" not in cfg:
                     cfg["cover_threads"] = 2
+                if "cd2_mount_path" not in cfg:
+                    cfg["cd2_mount_path"] = "/Movies/CloudDrive/115"
                 return cfg
         except Exception:
             pass
     cfg = {
         "cookie": load_cookie_from_env(),
         "default_prefix": "http://23.19.231.70:5244/d/115",
+        "cd2_mount_path": "/Movies/CloudDrive/115",
         "default_output": "/Movies/TreeStrms",
         "layer_limit": 25,
         "sync_subtitles": True,

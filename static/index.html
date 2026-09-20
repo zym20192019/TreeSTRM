@@ -379,14 +379,18 @@
                         <label class="block text-xs font-semibold text-slate-400 mb-1.5">115 云盘 Cookie</label>
                         <textarea id="cfg-cookie" rows="3" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" placeholder="UID=...; CID=...; SEID=..."></textarea>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">STRM 远程播放流前缀 (用于 Emby 秒起播)</label>
+                            <input type="text" id="cfg-default-prefix" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="http://23.19.231.70:5244/d/115">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">CD2 本地挂载根路径 (用于抽帧和探针)</label>
+                            <input type="text" id="cfg-cd2-mount" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/CloudDrive/115">
+                        </div>
                         <div>
                             <label class="block text-xs font-semibold text-slate-400 mb-1.5">STRM 本地输出基准路径</label>
                             <input type="text" id="cfg-default-output" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/TreeStrms">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">CD2 挂载路径前缀</label>
-                            <input type="text" id="cfg-default-prefix" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="/movies/CloudDrive/115">
                         </div>
                         <div>
                             <label class="block text-xs font-semibold text-slate-400 mb-1.5">抽帧并发线程数 (1~10)</label>
@@ -751,6 +755,7 @@
                 tpdb_token: (document.getElementById('cfg-tpdb-token') ? document.getElementById('cfg-tpdb-token').value.trim() : ''),
                 default_output: document.getElementById('cfg-default-output').value.trim(),
                 default_prefix: document.getElementById('cfg-default-prefix').value.trim(),
+                cd2_mount_path: document.getElementById('cfg-cd2-mount').value.trim(),
                 cover_threads: parseInt(document.getElementById('cfg-cover-threads').value) || 3,
                 layer_limit: 25,
                 sync_subtitles: true,
@@ -881,6 +886,7 @@
                 document.getElementById('cfg-cookie').value = globalConfig.cookie || '';
                 document.getElementById('cfg-default-output').value = globalConfig.default_output || '/Movies/TreeStrms';
                 document.getElementById('cfg-default-prefix').value = globalConfig.default_prefix || 'http://23.19.231.70:5244/d/115';
+                document.getElementById('cfg-cd2-mount').value = globalConfig.cd2_mount_path || '/Movies/CloudDrive/115';
                 document.getElementById('cfg-cover-threads').value = globalConfig.cover_threads || 3;
                 
                 const aiCfg = globalConfig.ai_governance || {};

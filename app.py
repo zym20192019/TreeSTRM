@@ -1172,7 +1172,9 @@ def process_single_category_job(job: dict):
                 try:
                     if do_poster:
                         diagnostic = {}
-                        ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p, diagnostic=diagnostic)
+                        cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
+                        s_prefix = cfg.get("default_prefix", "http://23.19.231.70:5244/d/115")
+                        ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p, diagnostic=diagnostic, cd2_mount_path=cd2_root, stream_prefix=s_prefix)
                         if ok:
                             with gov_lock:
                                 gov_progress["covers_extracted"] += 1
@@ -1186,12 +1188,24 @@ def process_single_category_job(job: dict):
                                 detail += f"；ffprobe返回码={diagnostic['probe_returncode']}"
                             if diagnostic.get("probe_stderr"):
                                 detail += f"；stderr={diagnostic['probe_stderr']}"
-                            detail += f"；STRM目标={raw_t}；本地路径={raw_t.replace('/movies/', '/Movies/', 1)}"
+                            detail += f"；STRM目标={raw_t}；实际物理探测路径={diagnostic.get('mapped_path', '未转换')}"
                             push_log(f"⚠️ [补齐封面失败] 【{v_name}】({reason}) ➔ {detail[:2200]}")
                     else:
                         # 封面已有，仅需深度探针补充音视频流信息与大小
                         host_target = raw_t
-                        if host_target.startswith('/movies/'):
+                        cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
+                        s_prefix = cfg.get("default_prefix", "http://23.19.231.70:5244/d/115")
+                        if s_prefix and host_target.startswith(s_prefix):
+                            rel = host_target[len(s_prefix):].lstrip("/")
+                            host_target = os.path.join(cd2_root, rel)
+                        elif host_target.startswith("http://") or host_target.startswith("https://"):
+                            if "/d/115/" in host_target:
+                                rel = host_target.split("/d/115/", 1)[1]
+                                host_target = os.path.join(cd2_root, rel)
+                            elif "/115/" in host_target:
+                                rel = host_target.split("/115/", 1)[1]
+                                host_target = os.path.join(cd2_root, rel)
+                        elif host_target.startswith('/movies/'):
                             host_target = '/Movies/' + host_target[8:]
                         m_info = probe_media_info(host_target, timeout_sec=35)
                         if update_nfo_with_streamdetails(nfo_p, m_info):
@@ -1301,6 +1315,7 @@ class AIGovModel(BaseModel):
 class ConfigModel(BaseModel):
     cookie: str
     default_prefix: str
+    cd2_mount_path: Optional[str] = "/Movies/CloudDrive/115"
     default_output: str
     layer_limit: int = 25
     sync_subtitles: bool = True
@@ -1400,6 +1415,7 @@ def update_config(data: ConfigModel):
     cfg = load_config()
     cfg["cookie"] = data.cookie
     cfg["default_prefix"] = data.default_prefix
+    cfg["cd2_mount_path"] = data.cd2_mount_path or "/Movies/CloudDrive/115"
     cfg["default_output"] = data.default_output
     cfg["layer_limit"] = data.layer_limit
     cfg["sync_subtitles"] = data.sync_subtitles

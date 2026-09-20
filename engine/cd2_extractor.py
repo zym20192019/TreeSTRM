@@ -185,17 +185,35 @@ def extract_cover_by_cd2(
     nfo_path: Optional[str] = None,
     max_threads: int = 2,
     timeout_sec: int = 35,
-    diagnostic: Optional[Dict] = None
+    diagnostic: Optional[Dict] = None,
+    cd2_mount_path: Optional[str] = None,
+    stream_prefix: Optional[str] = None
 ) -> bool:
     """走 CD2 本地挂载 Fast Seek 进行高效降权抽帧，顺便提取完整元数据反哺 NFO"""
     diagnostic = diagnostic if diagnostic is not None else {}
     try:
         host_target = target_path
-        if host_target.startswith('/movies/'):
+
+        # 动态将远程 URL 前缀映射为本地 CD2 真实物理挂载路径
+        if stream_prefix and host_target.startswith(stream_prefix):
+            rel = host_target[len(stream_prefix):].lstrip("/")
+            mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
+            host_target = os.path.join(mount_root, rel)
+        elif host_target.startswith("http://") or host_target.startswith("https://"):
+            # 通用兜底：截取 /d/115/ 之后的相对路径
+            mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
+            if "/d/115/" in host_target:
+                rel = host_target.split("/d/115/", 1)[1]
+                host_target = os.path.join(mount_root, rel)
+            elif "/115/" in host_target:
+                rel = host_target.split("/115/", 1)[1]
+                host_target = os.path.join(mount_root, rel)
+        elif host_target.startswith('/movies/'):
             host_target = '/Movies/' + host_target[8:]
 
         if not os.path.exists(host_target):
             diagnostic["reason"] = "目标路径不存在"
+            diagnostic["mapped_path"] = host_target
             return False
         if os.path.isdir(host_target):
             diagnostic["reason"] = "目标实际是目录"
