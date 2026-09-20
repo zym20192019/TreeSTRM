@@ -379,22 +379,42 @@
                         <label class="block text-xs font-semibold text-slate-400 mb-1.5">115 云盘 Cookie</label>
                         <textarea id="cfg-cookie" rows="3" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" placeholder="UID=...; CID=...; SEID=..."></textarea>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">STRM 远程播放流前缀 (用于 Emby 秒起播)</label>
-                            <input type="text" id="cfg-default-prefix" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="http://23.19.231.70:5244/d/115">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div class="space-y-1.5">
+                            <label class="block text-xs font-semibold text-slate-300">
+                                <i class="bi bi-play-circle text-indigo-400 mr-1"></i>STRM 远程播放流前缀
+                            </label>
+                            <input type="text" id="cfg-default-prefix" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="http://23.19.231.70:5244/d/115">
+                            <p class="text-[11px] text-slate-400 leading-relaxed">
+                                💡 <b>写入 .strm 文件的播放链接前缀</b>。推荐填 Alist WebDAV 或直链地址（如 <code>http://IP:5244/d/115</code>）。Emby 收到后会识别为外部远程流，<b>彻底免除服务端卡顿探测，实现 0.4 秒瞬间秒播</b>。
+                            </p>
                         </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">CD2 本地挂载根路径 (用于抽帧和探针)</label>
-                            <input type="text" id="cfg-cd2-mount" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/CloudDrive/115">
+                        <div class="space-y-1.5">
+                            <label class="block text-xs font-semibold text-slate-300">
+                                <i class="bi bi-hdd-network text-emerald-400 mr-1"></i>CD2 本地挂载根路径
+                            </label>
+                            <input type="text" id="cfg-cd2-mount" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/CloudDrive/115">
+                            <p class="text-[11px] text-slate-400 leading-relaxed">
+                                💡 <b>本机 CloudDrive2 挂载 115 网盘的真实物理路径</b>（如 <code>/Movies/CloudDrive/115</code>）。TreeSTRM 在后台进行<b>封面黄金帧抽取、4K/AAC 流信息探针</b>时，会通过此路径直接读取视频文件。
+                            </p>
                         </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">STRM 本地输出基准路径</label>
-                            <input type="text" id="cfg-default-output" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/TreeStrms">
+                        <div class="space-y-1.5">
+                            <label class="block text-xs font-semibold text-slate-300">
+                                <i class="bi bi-folder-check text-cyan-400 mr-1"></i>STRM 本地输出基准路径
+                            </label>
+                            <input type="text" id="cfg-default-output" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/TreeStrms">
+                            <p class="text-[11px] text-slate-400 leading-relaxed">
+                                💡 <b>TreeSTRM 生成 .strm、.nfo 和封面图片的落盘目录</b>。Emby 媒体库直接添加此路径（如 <code>/Movies/TreeStrms/成人</code>）即可自动识别所有影视资源。
+                            </p>
                         </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1.5">抽帧并发线程数 (1~10)</label>
-                            <input type="number" id="cfg-cover-threads" min="1" max="10" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" value="3">
+                        <div class="space-y-1.5">
+                            <label class="block text-xs font-semibold text-slate-300">
+                                <i class="bi bi-cpu text-amber-400 mr-1"></i>抽帧并发线程数 (1~10)
+                            </label>
+                            <input type="number" id="cfg-cover-threads" min="1" max="10" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="3">
+                            <p class="text-[11px] text-slate-400 leading-relaxed">
+                                💡 <b>治理专区时同时抓取封面的工作线程数</b>。默认 3 线程，单机低负载运行；若 115 偶有流控建议保持在 1~3 之间以保证最稳。
+                            </p>
                         </div>
                     </div>
                     <div class="flex justify-end pt-2">
