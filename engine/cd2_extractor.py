@@ -240,9 +240,9 @@ def extract_cover_by_cd2(
             diagnostic.update(media_diag)
             return False
 
-        # 2. 黄金截取点策略：
-        # 对于 .webm 格式 (缺乏索引，远程seek极慢)，优先截取片头 3-5 秒，避免拉取数百兆远程数据
-        # 对于 .mp4/.mkv 等带头索引格式，保留 总时长/2 居中黄金帧
+        # 2. 截取点策略（超长直播/大文件保护）：
+        # 对于超长录播 (>10分钟 / 600秒)，坚决不要 seek 到几个小时的中间去拉取数 GB 远端数据，极易触发跨洋超时
+        # 统一截取片头 3-15 秒（精彩开场），秒级出图且零流量浪费
         ext = os.path.splitext(host_target)[1].lower()
         real_duration = media_info.get("duration", 0.0)
         
@@ -250,10 +250,13 @@ def extract_cover_by_cd2(
             target_seek = seek_sec
         elif ext == '.webm':
             target_seek = 3
+        elif real_duration > 600:
+            # 录播长视频：截取第 10 秒
+            target_seek = 10
         elif real_duration > 10:
             target_seek = int(real_duration / 2)
         else:
-            # 短视频必须落在实际时长内，不能固定跳到第 3 秒。
+            # 短视频
             target_seek = max(0, min(3, int(real_duration / 2)))
 
         s_time = time.strftime('%H:%M:%S', time.gmtime(target_seek))
