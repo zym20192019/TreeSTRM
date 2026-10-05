@@ -11,6 +11,7 @@ TreeSTRM 核心对账与 STRM 极速生成引擎
 import os
 import io
 import re
+import urllib.parse
 from typing import List, Tuple, Dict
 from core.config import COMPREHENSIVE_VIDEO_EXTS, COMPREHENSIVE_SUBTITLE_EXTS
 from core.events import push_log
@@ -122,7 +123,8 @@ def sync_strms_pure_1to1(
             
         strm_filename = f"{basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
-        content = f"{strm_prefix}/{rel_path.lstrip('/')}"
+        encoded_rel_path = "/".join(urllib.parse.quote(part) for part in rel_path.lstrip("/").split("/"))
+        content = f"{strm_prefix}/{encoded_rel_path}"
         expected_strms[target_path] = content
 
     push_log(f"云端有效 STRM 应有: {len(expected_strms)} 个")

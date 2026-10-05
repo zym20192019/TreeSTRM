@@ -10,10 +10,12 @@ TreeSTRM CD2 本地通道 Fast Seek 抽帧核心引擎
 """
 
 import os
-import time
+import re
 import json
+import time
 import shutil
 import subprocess
+import urllib.parse
 from typing import Optional, Dict, Tuple
 from xml.etree import ElementTree as ET
 
@@ -196,22 +198,31 @@ def extract_cover_by_cd2(
 
         # 动态将远程 URL 前缀映射为本地 CD2 真实物理挂载路径
         if stream_prefix and host_target.startswith(stream_prefix):
-            rel = host_target[len(stream_prefix):].lstrip("/")
+            rel = urllib.parse.unquote(host_target[len(stream_prefix):].lstrip("/"))
             mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
             host_target = os.path.join(mount_root, rel)
         elif host_target.startswith("http://") or host_target.startswith("https://"):
             # 通用兜底：截取 /d/115/ 之后的相对路径
             mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
             if "/d/115/" in host_target:
-                rel = host_target.split("/d/115/", 1)[1]
+                rel = urllib.parse.unquote(host_target.split("/d/115/", 1)[1])
                 host_target = os.path.join(mount_root, rel)
             elif "/115/" in host_target:
-                rel = host_target.split("/115/", 1)[1]
+                rel = urllib.parse.unquote(host_target.split("/115/", 1)[1])
                 host_target = os.path.join(mount_root, rel)
         elif host_target.startswith('/movies/'):
             host_target = '/Movies/' + host_target[8:]
 
-        if not os.path.exists(host_target):
+        # CD2 FUSE 挂载点瞬时响应容错重试机制（防并发与 IO 抖动误判）
+        exists = False
+        for attempt in range(3):
+            if os.path.exists(host_target):
+                exists = True
+                break
+            if attempt < 2:
+                time.sleep(1.0)
+
+        if not exists:
             diagnostic["reason"] = "目标路径不存在"
             diagnostic["mapped_path"] = host_target
             return False

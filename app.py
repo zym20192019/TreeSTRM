@@ -1,5 +1,6 @@
 import scraper_service
 import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex
+from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
@@ -382,56 +383,6 @@ def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs:
 
 # ---------- 智能文字语义与 AI 标签治理核心 ----------
 
-def extract_rule_tags(rel_path: str) -> dict:
-    parts = rel_path.strip('/').split('/')
-    filename = parts[-1]
-    base, _ = os.path.splitext(filename)
-    
-    genres = []
-    tags = []
-    studio = ""
-    
-    if len(parts) >= 2:
-        top_category = parts[1] if len(parts) > 1 and parts[0] == "成人" else parts[0]
-        genres.append(top_category)
-        tags.append(top_category)
-        
-    if len(parts) >= 3:
-        sub_folder = parts[2] if parts[0] == "成人" else parts[1]
-        studio = sub_folder
-        tags.append(sub_folder)
-        if "舞" in sub_folder:
-            tags.extend(["舞蹈", "舞团"])
-        elif "街拍" in sub_folder or "户外" in sub_folder:
-            tags.extend(["街拍", "户外"])
-        elif "车模" in sub_folder:
-            tags.extend(["车模", "车展"])
-        elif "动漫" in sub_folder or "3d" in sub_folder.lower():
-            tags.extend(["3D动漫", "二次元", "同人"])
-        elif "直播" in sub_folder or "BJ" in sub_folder:
-            tags.extend(["主播", "直播录屏"])
-            
-    if re.search(r'4k|2160p', filename, re.IGNORECASE):
-        tags.append("4K原画")
-    if re.search(r'竖|vt|vertical', filename, re.IGNORECASE):
-        tags.append("竖屏")
-    if re.search(r'横|hz|horizontal', filename, re.IGNORECASE):
-        tags.append("横屏")
-    if re.search(r'MMD', filename, re.IGNORECASE):
-        tags.append("MMD")
-    if re.search(r'VAM', filename, re.IGNORECASE):
-        tags.append("VAM")
-        
-    unique_tags = list(dict.fromkeys(tags))
-    unique_genres = list(dict.fromkeys(genres))
-    
-    return {
-        "title": base,
-        "studio": studio,
-        "genres": unique_genres or ["精选"],
-        "tags": unique_tags
-    }
-
 def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Optional[dict]:
     """目录级 AI 审批：失败重试 2 次，仍失败记录账本并规则降级。"""
     if not ai_cfg.get("enabled") or not ai_cfg.get("api_key"):
@@ -772,7 +723,8 @@ def sync_strms_pure_1to1(
             
         strm_filename = f"{basename}.strm"
         target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
-        content = f"{strm_prefix}/{rel_path.lstrip('/')}"
+        encoded_rel_path = "/".join(urllib.parse.quote(part) for part in rel_path.lstrip("/").split("/"))
+        content = f"{strm_prefix}/{encoded_rel_path}"
         expected_strms[target_path] = content
 
     push_log(f"云端有效 STRM 应有: {len(expected_strms)} 个")
@@ -1109,13 +1061,11 @@ def process_single_category_job(job: dict):
 
             with open(it["strm_path"], "r", encoding="utf-8") as sf:
                 raw_target = sf.read().strip()
-                video_name = os.path.basename(raw_target)
+                raw_target_decoded = unquote(raw_target)
+                video_name = os.path.basename(raw_target_decoded)
 
-            # 1. 极速纯文本生成 NFO (不阻塞 CD2 IO，基础骨架秒出)
+            # 1. 严格由 AI 大模型提炼生成 NFO（彻底移除死板规则兜底，防元数据污染）
             if not it["has_nfo"]:
-                rel_p = os.path.relpath(it["strm_path"], cfg.get("default_output"))
-                meta = extract_rule_tags(rel_p)
-                
                 # 优先注入大模型针对该单文件的个性化提炼结果
                 item_rel_path = os.path.relpath(it["strm_path"], output_root)
                 item_ai = (
@@ -1126,27 +1076,27 @@ def process_single_category_job(job: dict):
                 if not item_ai or not isinstance(item_ai, dict):
                     push_log(f"⏭️ [跳过NFO] 【{video_name}】文件级 AI 未成功返回，保持 NFO 缺失，等待补偿")
                     continue
-                if item_ai and isinstance(item_ai, dict):
-                    if item_ai.get("clean_title"):
-                        meta["title"] = item_ai.get("clean_title")
-                    if item_ai.get("tags") and isinstance(item_ai.get("tags"), list):
-                        meta["tags"] = list(dict.fromkeys(meta["tags"] + item_ai.get("tags")))
-                    if item_ai.get("summary"):
-                        meta["summary"] = item_ai.get("summary")
-                if item_rel_path in failed_ai_paths:
-                    meta["tags"] = list(dict.fromkeys(meta.get("tags", []) + ["AI待补"]))
-                    meta["summary"] = (meta.get("summary") or "") + "（AI提炼失败，待补全）"
+
+                clean_title = item_ai.get("clean_title") or it["base_name"]
+                ai_tags = item_ai.get("tags") if isinstance(item_ai.get("tags"), list) else []
+                common_tags = ai_res.get("common_tags", []) if ai_res and isinstance(ai_res.get("common_tags"), list) else []
+                meta_studio = ai_res.get("studio", "") if ai_res else ""
+                meta_genres = ai_res.get("genre", ["精选"]) if ai_res else ["精选"]
+                if isinstance(meta_genres, str):
+                    meta_genres = [meta_genres]
                 
-                # 叠加目录级公共元数据
-                if ai_res:
-                    if ai_res.get("studio") and not meta.get("studio"): meta["studio"] = ai_res.get("studio")
-                    if ai_res.get("genre"):
-                        g = ai_res.get("genre")
-                        meta["genres"] = g if isinstance(g, list) else [g]
-                    if ai_res.get("common_tags"):
-                        meta["tags"] = list(dict.fromkeys(meta["tags"] + ai_res.get("common_tags")))
-                    if ai_res.get("clean_summary") and not meta.get("summary"):
-                        meta["summary"] = ai_res.get("clean_summary")
+                meta_summary = item_ai.get("summary") or (ai_res.get("clean_summary") if ai_res else "") or ""
+                if item_rel_path in failed_ai_paths:
+                    ai_tags = list(dict.fromkeys(ai_tags + ["AI待补"]))
+                    meta_summary = (meta_summary or "") + "（AI提炼失败，待补全）"
+
+                meta = {
+                    "title": clean_title,
+                    "studio": meta_studio,
+                    "genres": meta_genres,
+                    "tags": list(dict.fromkeys(ai_tags + common_tags)),
+                    "summary": meta_summary
+                }
                 
                 write_nfo_file(it["nfo_path"], meta)
                 gov_progress["nfos_generated"] += 1
