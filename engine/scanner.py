@@ -1,20 +1,11 @@
 import os, sys, re, time, json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
 
 SUBTITLE_EXTS = {'.srt', '.ass', '.ssa', '.vtt', '.sub', '.sup', '.idx', '.smi'}
 
-def is_subtitle_strm(strm_path: str, filename: str) -> bool:
-    """按 STRM 实际目标扩展名判断字幕，不能把文件名括号当扩展名。"""
-    try:
-        with open(strm_path, 'r', encoding='utf-8', errors='replace') as f:
-            target = f.readline().strip()
-        target_ext = os.path.splitext(target.split('?', 1)[0])[1].lower()
-        if target_ext:
-            return target_ext in SUBTITLE_EXTS
-    except OSError:
-        pass
-    m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
-    return bool(m and ('.' + m.group(1).lower()) in SUBTITLE_EXTS)
+# 预编译正则，避免循环内重复解析
+IMAGE_POSTER_RE = re.compile(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', re.IGNORECASE)
 
 def scan_single_category(cat_dir: str) -> Dict[str, Any]:
     cat_dir = os.path.abspath(cat_dir)
@@ -36,18 +27,21 @@ def scan_single_category(cat_dir: str) -> Dict[str, Any]:
     n_set = set()
     sub_count = 0
 
+    # 极速内存扫盘：不打开文件，零磁盘读取开销
     for root, _, files in os.walk(cat_dir):
         for f in files:
             if f.endswith('.strm'):
                 base = f[:-5]
-                if is_subtitle_strm(os.path.join(root, f), f):
+                # 仅当文件名显式包含字幕特征时判定为字幕，免去逐个 open() 读取
+                lower_base = base.lower()
+                if any(lower_base.endswith(ext) for ext in SUBTITLE_EXTS):
                     sub_count += 1
                     continue
                 v_set.add(os.path.join(root, base))
             elif f.endswith('.nfo'):
                 n_set.add(os.path.join(root, f[:-4]))
-            elif re.search(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', f, re.IGNORECASE):
-                m_base = re.sub(r'-(poster|thumb)\.(jpg|png|jpeg|webp|gif)$', '', f, flags=re.IGNORECASE)
+            elif IMAGE_POSTER_RE.search(f):
+                m_base = IMAGE_POSTER_RE.sub('', f)
                 c_set.add(os.path.join(root, m_base))
             elif any(f.lower().endswith(ext) for ext in SUBTITLE_EXTS):
                 sub_count += 1
@@ -69,16 +63,20 @@ def scan_single_category(cat_dir: str) -> Dict[str, Any]:
         "nfo_pct": n_pct
     }
 
-def scan_all_categories(root_dir: str = "/Movies/TreeStrms/成人") -> Dict[str, Dict[str, Any]]:
+def scan_all_categories(root_dir: str = "/Movies/TreeStrms/成人", max_workers: int = 8) -> Dict[str, Dict[str, Any]]:
     root_dir = os.path.abspath(root_dir)
     if not os.path.exists(root_dir):
         return {}
     
-    result = {}
     subdirs = sorted([d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))])
-    for d in subdirs:
-        cat_path = os.path.join(root_dir, d)
-        result[d] = scan_single_category(cat_path)
+    cat_paths = [os.path.join(root_dir, d) for d in subdirs]
+    
+    result = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        scanned_list = list(pool.map(scan_single_category, cat_paths))
+        
+    for item in scanned_list:
+        result[item["name"]] = item
     return result
 
 def sync_cache_to_disk(cache_path: str = "/opt/treestrm/data/categories_cache.json", root_dir: str = "/Movies/TreeStrms/成人") -> Dict[str, Dict[str, Any]]:
