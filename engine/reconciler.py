@@ -12,9 +12,16 @@ import os
 import io
 import re
 import urllib.parse
-from typing import List, Tuple, Dict
+from typing import Callable, List, Optional, Tuple, Dict
 from core.config import COMPREHENSIVE_VIDEO_EXTS, COMPREHENSIVE_SUBTITLE_EXTS
 from core.events import push_log
+
+# 过期 STRM 清理熔断：单次待删数量 >= MIN_COUNT 且占本地比例 > MAX_RATIO 时拒绝清理
+ORPHAN_GUARD_MIN_COUNT = 500
+ORPHAN_GUARD_MAX_RATIO = 0.3
+
+# progress_callback(已处理, 总数, 新建, 跳过, 删除)
+ProgressCallback = Callable[[int, int, int, int, int], None]
 
 def _tree_entry_name(line: str) -> str:
     """只移除 115 树格式的结构前缀（包括 ASCII -、中文全角破折号 ——、制表符 ─ 等），保留真实文件名的首字符。"""
@@ -101,7 +108,7 @@ def sync_strms_pure_1to1(
     output_dir: str,
     strm_prefix: str,
     auto_cleanup: bool = True,
-    progress_callback = None
+    progress_callback: Optional[ProgressCallback] = None
 ) -> Tuple[int, int, int]:
     """1:1 纯净生成 STRM 播放索引文件"""
     output_dir = os.path.abspath(output_dir)
@@ -145,6 +152,12 @@ def sync_strms_pure_1to1(
 
     if auto_cleanup and len(expected_strms) > 0:
         orphan_strms = existing_local_strms - set(expected_strms.keys())
+        orphan_ratio = len(orphan_strms) / len(existing_local_strms) if existing_local_strms else 0.0
+        if len(orphan_strms) >= ORPHAN_GUARD_MIN_COUNT and orphan_ratio > ORPHAN_GUARD_MAX_RATIO:
+            # 目录树下载截断/解码丢行时，解析结果会偏少，此时清理会误删大量有效 STRM
+            push_log(f"🛑 安全熔断：待清理过期 STRM {len(orphan_strms)} 个，占本地 {round(orphan_ratio * 100, 1)}%，"
+                     f"超过 {int(ORPHAN_GUARD_MAX_RATIO * 100)}% 阈值，疑似目录树不完整，本次跳过清理！")
+            orphan_strms = set()
         if orphan_strms:
             push_log(f"发现 {len(orphan_strms)} 个云端已删除的过期 STRM，正在安全清理索引...")
             for old_p in orphan_strms:
@@ -157,6 +170,8 @@ def sync_strms_pure_1to1(
 
     total_to_process = len(expected_strms)
     batch_count = 0
+
+    push_log("开始增量写入 STRM 播放索引...")
 
     for target_path, content in expected_strms.items():
         batch_count += 1
@@ -183,11 +198,11 @@ def sync_strms_pure_1to1(
             except Exception:
                 v_skipped += 1
 
+        if progress_callback:
+            progress_callback(batch_count, total_to_process, v_created, v_skipped, v_deleted)
         if batch_count % 30000 == 0 or batch_count == total_to_process:
             pct = round(batch_count / total_to_process * 100, 1)
             push_log(f"STRM 索引生成进度: {batch_count}/{total_to_process} ({pct}%) - 已新建: {v_created}, 跳过已有: {v_skipped}")
-            if progress_callback:
-                progress_callback(batch_count, total_to_process, v_created, v_skipped, v_deleted)
 
     push_log(f"🎉 全量 STRM 生成完成！新增: {v_created}，修复路径: {v_repaired}，跳过已有: {v_skipped}，清理过期: {v_deleted}")
     return v_created, v_skipped, v_deleted

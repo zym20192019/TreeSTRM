@@ -6,11 +6,13 @@ TreeSTRM 日志与事件广播模块
 import time
 import json
 import os
+import glob
 import requests
-from typing import List
+from typing import List, Optional
 from core.config import SPEED_FILE, DATA_DIR
 
 LOG_DIR = os.path.join(DATA_DIR, "logs")
+LOG_RETENTION_DAYS = 7
 
 # 全进程唯一的实时日志缓冲区：app.py 与 engine/services 各模块共用，/api/status 读取此处
 live_log_messages: List[str] = []
@@ -18,17 +20,34 @@ MAX_LIVE_LOGS = 1000
 
 TG_BOT_TOKEN = ""
 TG_CHAT_ID = "5662349315"
+# 强制红线：单 Cookie 慢牛流控底线 >= 2.0s
 MIN_SAFE_DELAY = 2.0
 
+_last_log_day: Optional[str] = None
+
+def cleanup_old_logs():
+    """删除超过 LOG_RETENTION_DAYS 天的历史日志文件"""
+    cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+    for p in glob.glob(os.path.join(LOG_DIR, "treestrm_*.log")):
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+        except OSError:
+            pass
+
 def push_log(msg: str):
+    global _last_log_day
     ts = time.strftime("%H:%M:%S")
     entry = f"[{ts}] {msg}"
     live_log_messages.append(entry)
     if len(live_log_messages) > MAX_LIVE_LOGS:
         live_log_messages.pop(0)
 
-    # 7 天持久化滚动存储
+    # 7 天持久化滚动存储：进程首条日志及每次跨天时清理过期文件
     today = time.strftime("%Y-%m-%d")
+    if today != _last_log_day:
+        _last_log_day = today
+        cleanup_old_logs()
     log_file = os.path.join(LOG_DIR, f"treestrm_{today}.log")
     try:
         with open(log_file, "a", encoding="utf-8") as f:

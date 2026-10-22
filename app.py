@@ -1,75 +1,25 @@
 import scraper_service
-import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex, secrets, hmac
+import os, sys, re, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex, secrets, hmac
 from urllib.parse import unquote
 from xml.sax.saxutils import escape as xml_escape
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
 
-BASE_DIR = "/opt/treestrm"
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-DATA_DIR = os.path.join(BASE_DIR, "data")
-LOGS_FILE = os.path.join(DATA_DIR, "history.json")
-SPEED_FILE = os.path.join(DATA_DIR, "speed.json")
-LOG_DIR = os.path.join(DATA_DIR, "logs")
+from core.config import (
+    BASE_DIR, CONFIG_FILE, DATA_DIR, LOGS_FILE, SPEED_FILE,
+    DEFAULT_PROTECTED_CATEGORIES, COMPREHENSIVE_SUBTITLE_EXTS,
+    ConfigModel, load_config, save_config,
+)
+from core.events import push_log, live_log_messages, send_telegram_alert, get_dynamic_delay, MIN_SAFE_DELAY, LOG_DIR
+from services.cloud115 import create_115_session, export_115_tree
+from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
+
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
 
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
-
-COMPREHENSIVE_VIDEO_EXTS = {
-    '.mp4', '.mkv', '.avi', '.wmv', '.mov', '.flv', '.webm', '.m4v',
-    '.ts', '.m2ts', '.mts', '.vob', '.iso', '.rmvb', '.rm', '.asf',
-    '.264', '.265', '.hevc', '.mpg', '.mpeg', '.f4v'
-}
-
-COMPREHENSIVE_SUBTITLE_EXTS = {
-    '.srt', '.ass', '.ssa', '.vtt', '.sub', '.sup', '.idx', '.smi'
-}
-
-from core.events import push_log, live_log_messages
-
-TG_BOT_TOKEN = ""
-TG_CHAT_ID = "5662349315"
-
-def send_telegram_alert(text: str):
-    try:
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TG_CHAT_ID, "text": text}, timeout=10)
-    except Exception:
-        pass
-
-def cleanup_logs_older_than_7_days():
-    """自动清理超过 7 天的历史日志文件"""
-    try:
-        now = time.time()
-        cutoff = now - (7 * 86400)
-        import glob
-        for p in glob.glob(os.path.join(LOG_DIR, "treestrm_*.log")):
-            if os.path.getmtime(p) < cutoff:
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-# 强制红线：单 Cookie 慢牛流控底线 >= 2.0s
-MIN_SAFE_DELAY = 2.0
-
-def get_dynamic_delay() -> float:
-    try:
-        if os.path.exists(SPEED_FILE):
-            with open(SPEED_FILE, "r") as f:
-                d = json.load(f)
-                val = float(d.get("delay", 2.0))
-                return max(MIN_SAFE_DELAY, val)
-    except Exception:
-        pass
-    return 2.0
 
 sync_progress = {
     "is_syncing": False,
@@ -102,271 +52,38 @@ gov_progress = {
     "total_api_calls": 0
 }
 
-DEFAULT_PROTECTED_CATEGORIES = ["欧美刮削", "欧美刮削_01", "AV女优", "FC2", "我爱的AV", "无码刮削", "AdultMovie"]
+_history_lock = threading.Lock()
+_history_cache: Optional[list] = None
 
-# 115 官方标准伪装指纹头
-OFFICIAL_115_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Origin': 'https://115.com',
-    'Referer': 'https://115.com/'
-}
-
-def load_cookie_from_env() -> str:
-    env_p = "/opt/115-agent/.env"
-    if os.path.exists(env_p):
-        with open(env_p, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                if line.startswith("PAN115_COOKIE="):
-                    return line.strip().split("=", 1)[1]
-    return ""
-
-def load_config() -> dict:
-    # ⚠️ 已知风险（未修复，见 UPGRADE_NOTES.md）：config.json 存在但 JSON 解析失败时，
-    # 下方 except 吞掉异常后会落到默认配置分支并 save_config 覆盖原文件，
-    # 导致 cookie / rules / access_token 等全部丢失。升级前请先备份 config.json。
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                if not cfg.get("cookie"):
-                    cfg["cookie"] = load_cookie_from_env()
-                if "protected_categories" not in cfg:
-                    cfg["protected_categories"] = DEFAULT_PROTECTED_CATEGORIES
-                if "ai_governance" not in cfg:
-                    cfg["ai_governance"] = {
-                        "enabled": True,
-                        "api_base": "https://openrouter.ai/api/v1",
-                        "api_key": "",
-                        "model": "minimax/minimax-m2.7:free",
-                        "batch_size": 50
-                    }
-                return cfg
-        except Exception:
-            pass
-    cfg = {
-        "cookie": load_cookie_from_env(),
-        "default_prefix": "http://23.19.231.70:5244/d/115",
-        "default_output": "/Movies/TreeStrms",
-        "layer_limit": 25,
-        "sync_subtitles": True,
-        "auto_cleanup_orphan": True,
-        "cover_threads": 3,
-        "protected_categories": DEFAULT_PROTECTED_CATEGORIES,
-        "ai_governance": {
-            "enabled": True,
-            "api_base": "https://openrouter.ai/api/v1",
-            "api_key": "",
-            "model": "minimax/minimax-m2.7:free",
-            "batch_size": 50
-        },
-        "auto_sync_enabled": False,
-        "auto_sync_interval_mins": 30,
-        "rules": [
-            {
-                "id": "chengren_all",
-                "name": "成人",
-                "cid": "3291659674416491425",
-                "output_dir": "/Movies/TreeStrms",
-                "prefix": "http://23.19.231.70:5244/d/115",
-                "sync_subtitles": True,
-                "auto_cleanup_orphan": True,
-                "enabled": True,
-                "last_sync": None,
-                "last_status": "就绪",
-                "video_count": 0,
-                "sub_count": 0,
-                "ext_stats": {}
-            }
-        ]
-    }
-    save_config(cfg)
-    return cfg
-
-def save_config(cfg: dict):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-def load_history() -> list:
+def _read_history_file() -> list:
     if os.path.exists(LOGS_FILE):
         try:
             with open(LOGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
         except Exception:
             pass
     return []
 
+def load_history() -> list:
+    """history.json 只由本进程写入，内存缓存后 /api/status 轮询不再读盘"""
+    global _history_cache
+    with _history_lock:
+        if _history_cache is None:
+            _history_cache = _read_history_file()
+        return list(_history_cache)
+
 def append_history(entry: dict):
-    hist = load_history()
-    hist.insert(0, entry)
-    hist = hist[:50]
-    with open(LOGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(hist, f, ensure_ascii=False, indent=2)
-
-def create_115_session(cookie_str: str) -> requests.Session:
-    s = requests.Session()
-    s.headers.update(OFFICIAL_115_HEADERS)
-    for item in str(cookie_str or "").split(';'):
-        if '=' in item:
-            k, v = item.strip().split('=', 1)
-            s.cookies.set(k.strip(), v.strip(), domain='.115.com')
-            s.cookies.set(k.strip(), v.strip())
-    return s
-
-def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
-    push_log(f"向 115 发起目录树导出 (CID: {cid}, 最深: {layer_limit}层)...")
-    session = create_115_session(cookie)
-    
-    data = {
-        'file_ids': str(cid),
-        'target': f'U_1_{cid}',
-        'layer_limit': str(layer_limit)
-    }
-    
-    export_id = None
-    # 循环尝试提交导出任务，若提示“有类似任务正在处理”，等待几秒重试获取全新独立的 export_id
-    for submit_try in range(1, 10):
-        res = session.post('https://webapi.115.com/files/export_dir', data=data, timeout=20).json()
-        if isinstance(res.get('data'), dict) and res['data'].get('export_id'):
-            export_id = res['data']['export_id']
-            push_log(f"✅ 115 目录树任务提交成功，任务ID: {export_id}")
-            break
-        err_msg = res.get('error', '未知错误')
-        push_log(f"⚠️ 115 导出任务排队中 ({err_msg})，等待重试 ({submit_try}/10)...")
-        time.sleep(3)
-        
-    pick_code = None
-    push_log("正在轮询等待 115 服务端生成大树文件...")
-    
-    for i in range(120):
-        time.sleep(2)
-        if export_id:
-            try:
-                st_res = session.get(f'https://webapi.115.com/files/export_dir?export_id={export_id}', timeout=15).json()
-                raw_d = st_res.get('data', {})
-                if isinstance(raw_d, dict) and raw_d.get('pick_code'):
-                    pick_code = raw_d['pick_code']
-                    fn = raw_d.get('file_name', '目录树.txt')
-                    push_log(f"✅ 115 目录树快照已就绪: {fn} (pickcode: {pick_code})")
-                    break
-            except Exception:
-                pass
-        else:
-            # 若始终未能获取 export_id，定向搜索属于该 CID 的最新目录树文件
-            try:
-                search_res = session.get(
-                    'https://webapi.115.com/files/search',
-                    params={'search_value': '目录树', 'limit': 30},
-                    timeout=15
-                ).json()
-                candidates = [
-                    x for x in (search_res.get('data') or [])
-                    if isinstance(x, dict) and str(x.get('cid')) == str(cid)
-                    and x.get('pc') and '目录树' in str(x.get('n', ''))
-                ]
-                if candidates:
-                    item = candidates[0]
-                    pick_code = item['pc']
-                    push_log(f"✅ 已发现网盘中最新生成的目录树: {item.get('n')} (pickcode: {pick_code})")
-                    break
-            except Exception:
-                pass
-
-        if i > 0 and i % 5 == 0:
-            push_log(f"等待 115 服务端处理中... 已耗时 {i*2} 秒")
-            
-    if not pick_code:
-        raise TimeoutError("等待 115 目录树生成超时")
-        
-    dl_res = session.get(f'https://webapi.115.com/files/download?pickcode={pick_code}', timeout=15).json()
-    dl_url = dl_res.get('file_url') or (dl_res.get('data') or {}).get('file_url')
-    if not dl_url:
-        raise RuntimeError("获取目录树下载直链失败")
-        
-    push_log(f"正在携带认证 Cookie 从 115 CDN 拉取目录树...")
-    resp = session.get(dl_url, timeout=90)
-    
-    if resp.status_code != 200 or len(resp.content) < 500:
-        raise RuntimeError(f"目录树下载失败 (HTTP {resp.status_code}, 长度: {len(resp.content)} bytes)")
-        
-    mb_size = round(len(resp.content) / (1024 * 1024), 2)
-    push_log(f"目录树全量下载成功！大小: {mb_size} MB")
-    return resp.content.decode('utf-16le', errors='ignore')
-
-def _tree_entry_name(line: str) -> str:
-    """只移除 115 树格式的结构前缀（包括 ASCII -、中文全角破折号 ——、制表符 ─ 等），保留真实文件名的首字符。"""
-    value = str(line or "").replace("\ufeff", "").rstrip("\r\n")
-    value = re.sub(r"^[|\s]*", "", value)
-    value = re.sub(r"^[—\-\─\–]+", "", value)
-    return value.strip()
-
-
-def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs: bool = True) -> tuple:
-    push_log("正在合并软换行并解析目录树结构...")
-    clean_lines = []
-    current_line = ''
-    for raw_line in io.StringIO(str(content or "")):
-        line = str(raw_line or "").replace("\ufeff", "").rstrip("\r\n")
-        if not line: continue
-        if line.startswith('|') or line.startswith('﻿|'):
-            if current_line: clean_lines.append(current_line)
-            current_line = line
-        else:
-            # 115 长文件名会在空格处软换行；补回换行分隔空格，保留首行尾随空格，
-            # 避免“精舞社 可涵  NO1.mp4”被误拼成单空格路径。
-            current_line += " " + line.lstrip(" ")
-    if current_line: clean_lines.append(current_line)
-
-    line_levels = [l.count("|") for l in clean_lines]
-    num_lines = len(clean_lines)
-
-    path_stack = {}
-    matched_videos = []
-    matched_subs = []
-    ext_stats = {}
-    
-    for i in range(num_lines):
-        line = clean_lines[i]
-        level = line_levels[i]
-        clean_name = _tree_entry_name(line)
-        if not clean_name: continue
-        
-        for stale_level in [k for k in path_stack.keys() if k > level]:
-            path_stack.pop(stale_level, None)
-
-        # 核心修复：115 目录树把单层目录/文件名中的全角或原生斜杠打印为半角 /
-        # 但在文件系统路径中，单层名字内部的 / 必须替换为全角 ／ 避免被误切分成多级不存在的虚拟子目录
-        clean_name_escaped = clean_name.replace('/', '／')
-        path_stack[level] = clean_name_escaped
-
-        # 智能判定：若下一行层级更深，说明当前项是目录（避免类似 1(2).mp4 命名的历史空文件夹被误当成视频生成 STRM）
-        if i + 1 < num_lines and line_levels[i + 1] > level:
-            continue
-
-        parts = [path_stack[d] for d in range(level + 1) if d in path_stack]
-        if parts and parts[0] in ['根目录', 'ROOT', '']:
-            parts = parts[1:]
-        if not parts: continue
-        
-        if target_dir_name and parts[0] != target_dir_name:
-            continue
-            
-        _, ext = os.path.splitext(clean_name.lower())
-        rel_path = "/".join(parts)
-        
-        if ext in COMPREHENSIVE_VIDEO_EXTS and not clean_name.endswith('.txt'):
-            matched_videos.append(rel_path)
-            ext_stats[ext] = ext_stats.get(ext, 0) + 1
-        elif include_subs and ext in COMPREHENSIVE_SUBTITLE_EXTS:
-            matched_subs.append(rel_path)
-            ext_stats[ext] = ext_stats.get(ext, 0) + 1
-                
-    if len(matched_videos) == 0:
-        raise RuntimeError("目录树解析未提取到有效视频，触发安全熔断，中止同步以防误删！")
-        
-    push_log(f"解析成功！全量识别到正片视频: {len(matched_videos)} 部，外挂字幕: {len(matched_subs)} 轨")
-    return matched_videos, matched_subs, ext_stats
+    global _history_cache
+    with _history_lock:
+        current = _history_cache if _history_cache is not None else _read_history_file()
+        hist = ([entry] + current)[:50]
+        tmp_path = LOGS_FILE + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(hist, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, LOGS_FILE)
+        _history_cache = hist
 
 # ---------- 智能文字语义与 AI 标签治理核心 ----------
 
@@ -450,8 +167,11 @@ def _record_ai_failure(folder_hint: str, file_names: List[str], error: str, atte
     return record
 
 
-def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, _allow_split: bool = True) -> Dict[str, dict]:
-    """请求文件级 AI（按序号索引映射机制，一次性支持 50 个直推，0 误判、0 漏项）。"""
+def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, _allow_split: bool = True,
+                         failed_paths: Optional[set] = None) -> Dict[str, dict]:
+    """请求文件级 AI（按序号索引映射机制，一次性支持 50 个直推，0 误判、0 漏项）。
+    failed_paths: 若提供，最终失败批次的文件路径会加入该集合（替代读取失败账本做长度差，账本封顶 5000 条后差值恒为 0）。
+    """
     if not ai_cfg.get("enabled") or not ai_cfg.get("api_key") or not file_names:
         return {}
 
@@ -521,10 +241,12 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
         push_log(f"🔻 AI 批次连续失败，拆分重试: {folder_hint} {len(file_names)} -> 40/批")
         merged = {}
         for start in range(0, len(file_names), 40):
-            merged.update(call_ai_item_auditor(file_names[start:start + 40], folder_hint, ai_cfg, _allow_split=False))
+            merged.update(call_ai_item_auditor(file_names[start:start + 40], folder_hint, ai_cfg, _allow_split=False, failed_paths=failed_paths))
         return merged
 
     _record_ai_failure(folder_hint, file_names, last_error, 2)
+    if failed_paths is not None:
+        failed_paths.update(file_names)
     push_log(f"❌ AI 文件批次最终失败，已记录并降级生成 NFO: {folder_hint} ({len(file_names)}个)")
     return {}
 
@@ -689,115 +411,6 @@ def is_subtitle_strm(strm_path: str, filename: str) -> bool:
     m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
     return bool(m and ('.' + m.group(1).lower()) in COMPREHENSIVE_SUBTITLE_EXTS)
 
-
-# ----------------- 全量目录树 STRM 极速生成 (独立模块) -----------------
-
-# 过期 STRM 清理熔断：单次待删数量 >= MIN_COUNT 且占本地比例 > MAX_RATIO 时拒绝清理
-ORPHAN_GUARD_MIN_COUNT = 500
-ORPHAN_GUARD_MAX_RATIO = 0.3
-
-def sync_strms_pure_1to1(
-    video_paths: List[str],
-    sub_paths: List[str],
-    output_dir: str, 
-    strm_prefix: str,
-    auto_cleanup: bool = True
-) -> tuple:
-    output_dir = os.path.abspath(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-    strm_prefix = str(strm_prefix or "").rstrip('/')
-    
-    push_log("正在构建本次云端目标 STRM 完整集合...")
-    expected_strms = {}
-    
-    # 严格只有正片视频生成 .strm 播放索引，字幕文件绝不生成/覆盖 .strm
-    for rel_path in video_paths:
-        dirname = os.path.dirname(rel_path)
-        filename = os.path.basename(rel_path)
-        basename, raw_ext = os.path.splitext(filename)
-        
-        # 安全防御拦截：如果扩展名属于字幕或非视频，坚决丢弃
-        if raw_ext.lower() in COMPREHENSIVE_SUBTITLE_EXTS:
-            continue
-            
-        strm_filename = f"{basename}.strm"
-        target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
-        encoded_rel_path = "/".join(urllib.parse.quote(part) for part in rel_path.lstrip("/").split("/"))
-        content = f"{strm_prefix}/{encoded_rel_path}"
-        expected_strms[target_path] = content
-
-    push_log(f"云端有效 STRM 应有: {len(expected_strms)} 个")
-    
-    existing_local_strms = set()
-    if os.path.exists(output_dir):
-        for root, _, files in os.walk(output_dir):
-            for f in files:
-                if f.endswith('.strm'):
-                    existing_local_strms.add(os.path.join(root, f))
-                    
-    push_log(f"本地当前已有 STRM 文件: {len(existing_local_strms)} 个")
-
-    v_created = 0
-    v_skipped = 0
-    v_deleted = 0
-    v_repaired = 0
-    
-    if auto_cleanup and len(expected_strms) > 0:
-        orphan_strms = existing_local_strms - set(expected_strms.keys())
-        orphan_ratio = len(orphan_strms) / len(existing_local_strms) if existing_local_strms else 0.0
-        if len(orphan_strms) >= ORPHAN_GUARD_MIN_COUNT and orphan_ratio > ORPHAN_GUARD_MAX_RATIO:
-            # 目录树下载截断/解码丢行时，解析结果会偏少，此时清理会误删大量有效 STRM
-            push_log(f"🛑 安全熔断：待清理过期 STRM {len(orphan_strms)} 个，占本地 {round(orphan_ratio * 100, 1)}%，"
-                     f"超过 {int(ORPHAN_GUARD_MAX_RATIO * 100)}% 阈值，疑似目录树不完整，本次跳过清理！")
-            orphan_strms = set()
-        if orphan_strms:
-            push_log(f"发现 {len(orphan_strms)} 个云端已删除的过期 STRM，正在安全清理索引...")
-            for old_p in orphan_strms:
-                try:
-                    os.remove(old_p)
-                    v_deleted += 1
-                except Exception: pass
-            push_log(f"已成功清理 {v_deleted} 个过期无效 STRM 索引文件（元数据海报保持完整）！")
-
-    total_to_process = len(expected_strms)
-    sync_progress["total"] = total_to_process
-    sync_progress["processed"] = 0
-    
-    push_log("开始增量写入 STRM 播放索引...")
-    batch_count = 0
-    
-    for target_path, content in expected_strms.items():
-        batch_count += 1
-        sync_progress["processed"] = batch_count
-        
-        target_dir = os.path.dirname(target_path)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        if target_path not in existing_local_strms:
-            try:
-                with open(target_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-                v_created += 1
-            except Exception: pass
-        else:
-            try:
-                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                    existing_content = f.read().strip()
-                if existing_content != content:
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    v_repaired += 1
-                else:
-                    v_skipped += 1
-            except Exception:
-                v_skipped += 1
-
-        if batch_count % 30000 == 0 or batch_count == total_to_process:
-            pct = round(batch_count / total_to_process * 100, 1)
-            push_log(f"STRM 索引生成进度: {batch_count}/{total_to_process} ({pct}%) - 已新建: {v_created}, 跳过已有: {v_skipped}")
-
-    push_log(f"🎉 全量 STRM 生成完成！新增: {v_created}，修复路径: {v_repaired}，跳过已有: {v_skipped}，清理过期: {v_deleted}")
-    return v_created, v_skipped, v_deleted
 
 # ----------------- 二级页面：父子直属结构 100% 精准 CID 映射引擎 -----------------
 
@@ -1033,21 +646,7 @@ def _run_category_job(job: dict):
                     batch_items_payload.append(rel_to_root)
                 names_to_audit = [os.path.relpath(x["strm_path"], output_root) for x in batch_slice]
                 push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼完整路径 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
-                before_failure_count = 0
-                try:
-                    if os.path.exists(AI_FAILURE_LEDGER_FILE):
-                        with open(AI_FAILURE_LEDGER_FILE, "r", encoding="utf-8") as ff:
-                            before_failure_count = len(json.load(ff))
-                except Exception:
-                    pass
-                chunk_res = call_ai_item_auditor(batch_items_payload, folder_rel_path, current_ai_cfg)
-                try:
-                    with open(AI_FAILURE_LEDGER_FILE, "r", encoding="utf-8") as ff:
-                        new_failures = json.load(ff)[before_failure_count:]
-                    for failure in new_failures:
-                        failed_ai_paths.update(failure.get("files", []))
-                except Exception:
-                    pass
+                chunk_res = call_ai_item_auditor(batch_items_payload, folder_rel_path, current_ai_cfg, failed_paths=failed_ai_paths)
                 if chunk_res:
                     # 兼容返回 key 为 base_name 或者带路径的原始 payload
                     for k, v in chunk_res.items():
@@ -1129,7 +728,6 @@ def _run_category_job(job: dict):
 
         # 3. CD2 本地通道多线程并发 Fast Seek 抽封面 + 顺带探针流信息
         if work_tasks:
-            worker_threads = max(1, min(10, int(cfg.get("cover_threads", 3))))
             def _extract_worker(task):
                 raw_t, p_path, th_path, nfo_p, v_name, do_poster, reason = task
                 try:
@@ -1174,10 +772,9 @@ def _run_category_job(job: dict):
                     # CD2/FUSE 严格串行慢牛，避免并发 Range 请求触发 115 风控。
                     time.sleep(max(MIN_SAFE_DELAY, current_delay))
 
-            # 即使配置误写成更高值，也强制单线程访问 CD2 挂载点。
-            worker_threads = 1
-            with ThreadPoolExecutor(max_workers=worker_threads) as pool:
-                list(pool.map(_extract_worker, work_tasks))
+            # 115 流控红线：CD2 挂载点严格串行访问，config 中的 cover_threads 不参与此处（仅保留字段兼容旧配置）。
+            for task in work_tasks:
+                _extract_worker(task)
                     
     gov_progress["elapsed"] = round(time.time() - start_t, 2)
     done_msg = f"🎉 专区【{category_name}】CD2 无风控治理圆满完成！共补齐 NFO: {gov_progress['nfos_generated']} 个，补齐封面: {gov_progress['covers_extracted']} 张！耗时: {gov_progress['elapsed']}秒"
@@ -1280,37 +877,6 @@ async def require_access_token(request: Request, call_next):
             return JSONResponse(status_code=401, content={"detail": "访问口令错误或缺失"})
     return await call_next(request)
 
-class RuleModel(BaseModel):
-    name: str
-    cid: str
-    output_dir: str
-    prefix: str
-    sync_subtitles: bool = True
-    auto_cleanup_orphan: bool = True
-    enabled: bool = True
-
-class AIGovModel(BaseModel):
-    enabled: bool = True
-    api_base: str = "https://openrouter.ai/api/v1"
-    api_key: str = ""
-    model: str = "minimax/minimax-m2.7:free"
-    batch_size: int = 100
-
-class ConfigModel(BaseModel):
-    cookie: str
-    default_prefix: str
-    cd2_mount_path: Optional[str] = "/Movies/CloudDrive/115"
-    default_output: str
-    layer_limit: int = 25
-    sync_subtitles: bool = True
-    auto_cleanup_orphan: bool = True
-    cover_threads: int = 3
-    protected_categories: List[str] = DEFAULT_PROTECTED_CATEGORIES
-    ai_governance: AIGovModel
-    auto_sync_enabled: bool
-    auto_sync_interval_mins: int
-    rules: List[RuleModel] = []
-
 sync_lock = threading.Lock()
 
 def do_sync_task(rule_ids: Optional[List[str]] = None):
@@ -1322,6 +888,9 @@ def do_sync_task(rule_ids: Optional[List[str]] = None):
             # 任何异常都必须复位，否则 is_syncing 永久为 True，后续所有同步请求都会被拒绝
             sync_progress["is_syncing"] = False
             sync_progress["stage"] = "就绪"
+
+def _update_sync_progress(processed: int, total: int, created: int, skipped: int, deleted: int):
+    sync_progress.update(processed=processed, total=total, created=created, skipped=skipped, deleted=deleted)
 
 def _run_sync_rules(rule_ids: Optional[List[str]]):
     push_log("======== 开始执行目录树 STRM 全量对账同步 ========")
@@ -1354,8 +923,9 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
             tree_text = export_115_tree(cookie, cid=cid, layer_limit=layer_limit)
             videos, subs, ext_stats = parse_tree_1to1(tree_text, target_dir_name=r_name, include_subs=sync_subs)
             vc, vs, vd = sync_strms_pure_1to1(
-                videos, subs, out_dir, prefix, 
-                auto_cleanup=auto_clean
+                videos, subs, out_dir, prefix,
+                auto_cleanup=auto_clean,
+                progress_callback=_update_sync_progress
             )
             elapsed = round(time.time() - start_t, 2)
             
@@ -1434,6 +1004,21 @@ def set_speed(delay: float):
 # ----------------- 二级专区 API -----------------
 
 
+CATEGORIES_CACHE_FILE = os.path.join(DATA_DIR, "categories_cache.json")
+
+def load_categories_cache(root_dir: str) -> Dict[str, dict]:
+    """读取专区底账缓存；缓存缺失或损坏时触发一次并发物理盘点并回写"""
+    if os.path.exists(CATEGORIES_CACHE_FILE):
+        try:
+            with open(CATEGORIES_CACHE_FILE, "r", encoding="utf-8") as cf:
+                data = json.load(cf)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    from engine.scanner import sync_cache_to_disk
+    return sync_cache_to_disk(CATEGORIES_CACHE_FILE, root_dir)
+
 @app.get("/api/tasks")
 def get_primary_tasks():
     cfg = load_config()
@@ -1441,31 +1026,16 @@ def get_primary_tasks():
     res = []
     
     root_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人")
-    total_videos = 0
-    total_subs = 0
-    total_covers = 0
-    total_nfos = 0
     sub_categories_count = 0
-    
     if os.path.exists(root_dir):
-        subdirs = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
-        sub_categories_count = len(subdirs)
-        for d in subdirs:
-            p = os.path.join(root_dir, d)
-            for root, _, files in os.walk(p):
-                for f in files:
-                    if f.endswith('.strm'):
-                        m = re.search(r'\(([^)]+)\)\.strm$', f)
-                        ext = ('.' + m.group(1).lower()) if m else ''
-                        if ext in COMPREHENSIVE_SUBTITLE_EXTS:
-                            total_subs += 1
-                        else:
-                            total_videos += 1
-                    elif f.endswith('-poster.jpg') or f.endswith('-poster.png') or f.endswith('-poster.jpeg') or f.endswith('-poster.webp'):
-                        total_covers += 1
-                    elif f.endswith('.nfo'):
-                        total_nfos += 1
-                        
+        sub_categories_count = sum(1 for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d)))
+    # 读取专区底账缓存，避免每次请求 os.walk 十几万文件；缓存不存在时盘点一次并落盘
+    cached_map = load_categories_cache(root_dir)
+    total_videos = sum(x.get("video_count", 0) for x in cached_map.values())
+    total_subs = sum(x.get("sub_count", 0) for x in cached_map.values())
+    total_covers = sum(x.get("cover_count", 0) for x in cached_map.values())
+    total_nfos = sum(x.get("nfo_count", 0) for x in cached_map.values())
+
     cover_pct = round(total_covers / total_videos * 100) if total_videos > 0 else 100
     nfo_pct = round(total_nfos / total_videos * 100) if total_videos > 0 else 100
     

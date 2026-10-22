@@ -409,11 +409,11 @@
                         </div>
                         <div class="space-y-1.5">
                             <label class="block text-xs font-semibold text-slate-300">
-                                <i class="bi bi-cpu text-amber-400 mr-1"></i>抽帧并发线程数 (1~10)
+                                <i class="bi bi-cpu text-amber-400 mr-1"></i>抽帧并发线程数（暂不生效）
                             </label>
-                            <input type="number" id="cfg-cover-threads" min="1" max="10" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="3">
+                            <input type="number" id="cfg-cover-threads" min="1" max="10" disabled class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-slate-500 cursor-not-allowed focus:outline-none font-mono" value="3">
                             <p class="text-[11px] text-slate-400 leading-relaxed">
-                                💡 <b>治理专区时同时抓取封面的工作线程数</b>。默认 3 线程，单机低负载运行；若 115 偶有流控建议保持在 1~3 之间以保证最稳。
+                                💡 为遵守 115 流控红线，抽帧/探针<b>强制单线程串行</b>访问 CD2 挂载点，此项当前不生效（保留以兼容旧配置）。
                             </p>
                         </div>
                     </div>
@@ -470,6 +470,15 @@
 
         let globalConfig = {};
 
+        // 目录名/文件名/日志来自网盘与文件系统，插入 innerHTML 前必须转义
+        function esc(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+        }
+        // 用于 onclick="fn(...)" 内联参数：JSON 字符串字面量 + HTML 属性转义
+        function jsArg(value) {
+            return esc(JSON.stringify(String(value ?? '')));
+        }
+
         function switchTab(tabId) {
             ['tasks', 'dashboard', 'settings'].forEach(t => {
                 const btn = document.getElementById(`tab-btn-${t}`);
@@ -516,7 +525,7 @@
                 container.innerHTML = rules.map(t => {
                     const isChengren = t.name === '成人' || t.id === 'chengren_all';
                     return `
-                        <div onclick="enterTaskDetail('${t.id}', '${t.name}')" class="glass-card rounded-2xl p-6 transition-all duration-300 relative overflow-hidden group cursor-pointer hover:border-indigo-500/50 hover:shadow-indigo-500/10">
+                        <div onclick="enterTaskDetail(${jsArg(t.id)}, ${jsArg(t.name)})" class="glass-card rounded-2xl p-6 transition-all duration-300 relative overflow-hidden group cursor-pointer hover:border-indigo-500/50 hover:shadow-indigo-500/10">
                             <div class="flex items-start justify-between mb-4">
                                 <div class="flex items-center space-x-3">
                                     <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-500/20 group-hover:scale-105 transition-transform">
@@ -524,10 +533,10 @@
                                     </div>
                                     <div>
                                         <div class="flex items-center space-x-2">
-                                            <h3 class="text-lg font-bold text-white group-hover:text-indigo-400 transition-colors">${t.name}</h3>
-                                            <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-mono">CID: ${t.cid}</span>
+                                            <h3 class="text-lg font-bold text-white group-hover:text-indigo-400 transition-colors">${esc(t.name)}</h3>
+                                            <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-mono">CID: ${esc(t.cid)}</span>
                                         </div>
-                                        <p class="text-xs text-slate-400 mt-1">本地挂载: ${t.output_dir}/${t.name}</p>
+                                        <p class="text-xs text-slate-400 mt-1">本地挂载: ${esc(t.output_dir)}/${esc(t.name)}</p>
                                     </div>
                                 </div>
                                 <div class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition">
@@ -551,7 +560,7 @@
                             </div>
 
                             <div class="flex items-center justify-between text-xs pt-2 border-t border-slate-800/60">
-                                <span class="text-slate-400"><i class="bi bi-clock-history mr-1"></i>最近对账: ${t.last_sync}</span>
+                                <span class="text-slate-400"><i class="bi bi-clock-history mr-1"></i>最近对账: ${esc(t.last_sync)}</span>
                                 <span class="font-semibold text-indigo-400 group-hover:translate-x-1 transition-transform flex items-center">
                                     进入 2 级子专区治理 <i class="bi bi-arrow-right ml-1"></i>
                                 </span>
@@ -619,12 +628,12 @@
                         statusBadge = `
                             <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
                                 <i class="bi bi-hourglass-split mr-1 text-amber-400"></i>
-                                <span>${cat.type_desc}</span>
+                                <span>${esc(cat.type_desc)}</span>
                             </span>
                         `;
                     } else {
                         statusBadge = `
-                            <button onclick="toggleLock('${cat.name}')" title="点击切换加锁/解锁状态" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition ${isProtected ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'}">
+                            <button onclick="toggleLock(${jsArg(cat.name)})" title="点击切换加锁/解锁状态" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition ${isProtected ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'}">
                                 <i class="bi ${isProtected ? 'bi-lock-fill text-emerald-400 mr-1.5' : 'bi-unlock-fill text-slate-400 mr-1.5'}"></i>
                                 <span>${isProtected ? '已加锁保护 (点击解锁)' : '原生待治理 (点击加锁)'}</span>
                             </button>
@@ -635,13 +644,13 @@
                     if (isProtected) {
                         actionButtons = `
                             <span class="text-xs text-slate-500 mr-1"><i class="bi bi-shield-shaded me-1"></i>锁定</span>
-                            <button onclick="triggerOfficialScrape('${cat.name}')" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
+                            <button onclick="triggerOfficialScrape(${jsArg(cat.name)})" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
                                 <i class="bi bi-stars me-1 text-cyan-400"></i>官方刮削
                             </button>
-                            <button onclick="cleanOrphanMetadata('${cat.name}')" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
+                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
                                 <i class="bi bi-trash3 me-1"></i>清失效
                             </button>
-                            <button onclick="toggleLock('${cat.name}')" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition">
+                            <button onclick="toggleLock(${jsArg(cat.name)})" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition">
                                 一键解锁
                             </button>
                         `;
@@ -650,7 +659,7 @@
                             <span class="text-xs font-semibold text-indigo-400 mr-2 flex items-center inline-flex">
                                 <i class="bi bi-arrow-repeat animate-spin mr-1"></i>正在执行
                             </span>
-                            <button onclick="cleanOrphanMetadata('${cat.name}')" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition">
+                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition">
                                 清失效
                             </button>
                         `;
@@ -659,22 +668,22 @@
                             <span class="text-xs font-medium text-amber-400 mr-2">
                                 <i class="bi bi-clock-history mr-1"></i>排队等待中
                             </span>
-                            <button onclick="cleanOrphanMetadata('${cat.name}')" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition">
+                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition">
                                 清失效
                             </button>
                         `;
                     } else {
                         actionButtons = `
-                            <button onclick="triggerOfficialScrape('${cat.name}')" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
+                            <button onclick="triggerOfficialScrape(${jsArg(cat.name)})" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
                                 <i class="bi bi-stars me-1 text-cyan-400"></i>官方刮削
                             </button>
-                            <button onclick="cleanOrphanMetadata('${cat.name}')" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
+                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
                                 <i class="bi bi-trash3 me-1"></i>清失效
                             </button>
-                            <button onclick="runCategoryGov('${cat.name}', 50)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition" title="处理前 50 部作为小样本测试">
+                            <button onclick="runCategoryGov(${jsArg(cat.name)}, 50)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition" title="处理前 50 部作为小样本测试">
                                 试跑50部
                             </button>
-                            <button onclick="runCategoryGov('${cat.name}', 0, ${cat.video_count})" class="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition" title="加入治理队列 (自动顺延执行)">
+                            <button onclick="runCategoryGov(${jsArg(cat.name)}, 0, ${cat.video_count})" class="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition" title="加入治理队列 (自动顺延执行)">
                                 全量查漏补缺
                             </button>
                         `;
@@ -688,8 +697,8 @@
                                         <i class="bi ${isProtected ? 'bi-shield-check' : 'bi-folder2'}"></i>
                                     </div>
                                     <div>
-                                        <div class="font-semibold text-white">${cat.name}</div>
-                                        <div class="text-xs text-slate-400 font-mono">/成人/${cat.name}</div>
+                                        <div class="font-semibold text-white">${esc(cat.name)}</div>
+                                        <div class="text-xs text-slate-400 font-mono">/成人/${esc(cat.name)}</div>
                                     </div>
                                 </div>
                             </td>
@@ -929,7 +938,7 @@
                     else if (l.includes('🤖') || l.includes('AI')) color = 'text-violet-400 font-semibold';
                     else if (l.includes('📸')) color = 'text-cyan-400';
                     else if (l.includes('📥')) color = 'text-amber-300 font-semibold';
-                    return `<p class="mb-1 ${color}">${l}</p>`;
+                    return `<p class="mb-1 ${color}">${esc(l)}</p>`;
                 }).join('');
                 term.scrollTop = term.scrollHeight;
             } catch (e) {

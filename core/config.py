@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-TreeSTRM 核心配置管理模块
+TreeSTRM 核心配置管理模块（全项目唯一配置来源）
 """
 
 import os
+import sys
 import json
+import shutil
+import threading
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 BASE_DIR = "/opt/treestrm"
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+CONFIG_BACKUP_FILE = CONFIG_FILE + ".bak"
 DATA_DIR = os.path.join(BASE_DIR, "data")
 LOGS_FILE = os.path.join(DATA_DIR, "history.json")
 SPEED_FILE = os.path.join(DATA_DIR, "speed.json")
 
-DEFAULT_PROTECTED_CATEGORIES = [
-    "欧美刮削_01", "我爱的AV", "无码刮削", "AdultMovie",
-    "有声小说", "欧美刮削", "AV女优", "FC2"
-]
+DEFAULT_PROTECTED_CATEGORIES = ["欧美刮削", "欧美刮削_01", "AV女优", "FC2", "我爱的AV", "无码刮削", "AdultMovie"]
 
 COMPREHENSIVE_VIDEO_EXTS = {
     '.mp4', '.mkv', '.avi', '.wmv', '.mov', '.flv', '.webm', '.m4v',
@@ -29,12 +30,20 @@ COMPREHENSIVE_SUBTITLE_EXTS = {
     '.srt', '.ass', '.ssa', '.vtt', '.sub', '.sup', '.idx', '.smi'
 }
 
+def default_ai_governance() -> Dict[str, Any]:
+    return {
+        "enabled": True,
+        "api_base": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": "minimax/minimax-m2.7:free",
+        "batch_size": 50
+    }
+
 class RuleModel(BaseModel):
-    id: Optional[str] = None
     name: str
     cid: str
-    output_dir: Optional[str] = None
-    prefix: Optional[str] = None
+    output_dir: str
+    prefix: str
     sync_subtitles: bool = True
     auto_cleanup_orphan: bool = True
     enabled: bool = True
@@ -48,16 +57,23 @@ class AIGovModel(BaseModel):
 
 class ConfigModel(BaseModel):
     cookie: str
-    default_prefix: str = "http://23.19.231.70:5244/d/115"
-    cd2_mount_path: str = "/Movies/CloudDrive/115"
-    default_output: str = "/Movies/TreeStrms"
+    default_prefix: str
+    cd2_mount_path: Optional[str] = "/Movies/CloudDrive/115"
+    default_output: str
     layer_limit: int = 25
     sync_subtitles: bool = True
     auto_cleanup_orphan: bool = True
-    cover_threads: int = 2
-    auto_sync_enabled: bool = False
-    auto_sync_interval_mins: int = 30
-    ai_governance: Optional[AIGovModel] = None
+    cover_threads: int = 3
+    protected_categories: List[str] = DEFAULT_PROTECTED_CATEGORIES
+    ai_governance: AIGovModel
+    auto_sync_enabled: bool
+    auto_sync_interval_mins: int
+    rules: List[RuleModel] = []
+
+class ConfigLoadError(RuntimeError):
+    """config.json 存在但无法解析且无可用备份。宁可报错停服，也绝不用默认配置覆盖用户配置。"""
+
+_config_write_lock = threading.Lock()
 
 def load_cookie_from_env() -> str:
     env_p = "/opt/115-agent/.env"
@@ -68,23 +84,38 @@ def load_cookie_from_env() -> str:
                     return line.strip().split("=", 1)[1]
     return ""
 
+def _read_json_dict(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("顶层不是 JSON 对象")
+    return data
+
+def _apply_runtime_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """仅在内存中补齐缺省字段，不写盘"""
+    if not cfg.get("cookie"):
+        cfg["cookie"] = load_cookie_from_env()
+    cfg.setdefault("protected_categories", list(DEFAULT_PROTECTED_CATEGORIES))
+    cfg.setdefault("ai_governance", default_ai_governance())
+    cfg.setdefault("cover_threads", 3)
+    cfg.setdefault("cd2_mount_path", "/Movies/CloudDrive/115")
+    return cfg
+
 def load_config() -> dict:
-    # ⚠️ 已知风险（未修复，见 UPGRADE_NOTES.md）：与 app.py 同款，JSON 解析失败会用默认配置覆盖 config.json。
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                if not cfg.get("cookie"):
-                    cfg["cookie"] = load_cookie_from_env()
-                if "protected_categories" not in cfg:
-                    cfg["protected_categories"] = DEFAULT_PROTECTED_CATEGORIES
-                if "cover_threads" not in cfg:
-                    cfg["cover_threads"] = 2
-                if "cd2_mount_path" not in cfg:
-                    cfg["cd2_mount_path"] = "/Movies/CloudDrive/115"
-                return cfg
-        except Exception:
-            pass
+            return _apply_runtime_defaults(_read_json_dict(CONFIG_FILE))
+        except (OSError, ValueError) as exc:
+            # 绝不能落入下方默认配置分支：那会 save_config 覆盖掉用户的 cookie / rules / access_token
+            if os.path.exists(CONFIG_BACKUP_FILE):
+                try:
+                    cfg = _read_json_dict(CONFIG_BACKUP_FILE)
+                    print(f"[TreeSTRM] ⚠️ {CONFIG_FILE} 解析失败（{exc}），已改用备份 {CONFIG_BACKUP_FILE}；下次保存配置时将自动修复主文件", file=sys.stderr, flush=True)
+                    return _apply_runtime_defaults(cfg)
+                except (OSError, ValueError):
+                    pass
+            raise ConfigLoadError(f"{CONFIG_FILE} 解析失败且无可用备份，请手动修复：{exc}") from exc
+
     cfg = {
         "cookie": load_cookie_from_env(),
         "default_prefix": "http://23.19.231.70:5244/d/115",
@@ -93,8 +124,9 @@ def load_config() -> dict:
         "layer_limit": 25,
         "sync_subtitles": True,
         "auto_cleanup_orphan": True,
-        "cover_threads": 2,
-        "protected_categories": DEFAULT_PROTECTED_CATEGORIES,
+        "cover_threads": 3,
+        "protected_categories": list(DEFAULT_PROTECTED_CATEGORIES),
+        "ai_governance": default_ai_governance(),
         "auto_sync_enabled": False,
         "auto_sync_interval_mins": 30,
         "rules": [
@@ -119,5 +151,19 @@ def load_config() -> dict:
     return cfg
 
 def save_config(cfg: dict):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """原子写入：先写临时文件再 os.replace，写入前把当前（有效的）主文件备份为 .bak"""
+    with _config_write_lock:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        tmp_path = CONFIG_FILE + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(CONFIG_FILE):
+            try:
+                _read_json_dict(CONFIG_FILE)
+                # 只备份有效主文件，避免用损坏文件覆盖好的备份
+                shutil.copy2(CONFIG_FILE, CONFIG_BACKUP_FILE)
+            except (OSError, ValueError):
+                pass
+        os.replace(tmp_path, CONFIG_FILE)
