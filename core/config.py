@@ -69,6 +69,7 @@ def load_cookie_from_env() -> str:
     return ""
 
 def load_config() -> dict:
+    # ⚠️ 已知风险（未修复，见 UPGRADE_NOTES.md）：与 app.py 同款，JSON 解析失败会用默认配置覆盖 config.json。
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:

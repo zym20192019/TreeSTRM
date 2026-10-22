@@ -123,6 +123,9 @@ def load_cookie_from_env() -> str:
     return ""
 
 def load_config() -> dict:
+    # ⚠️ 已知风险（未修复，见 UPGRADE_NOTES.md）：config.json 存在但 JSON 解析失败时，
+    # 下方 except 吞掉异常后会落到默认配置分支并 save_config 覆盖原文件，
+    # 导致 cookie / rules / access_token 等全部丢失。升级前请先备份 config.json。
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
