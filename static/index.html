@@ -429,6 +429,45 @@
     </main>
 
     <script>
+        // ---------- 访问口令：所有 /api/ 请求自动携带 X-Access-Token，401 时弹窗索取 ----------
+        const ACCESS_TOKEN_KEY = 'treestrm_access_token';
+        const rawFetch = window.fetch.bind(window);
+        let tokenPromptDeclined = false;
+
+        function askAccessToken() {
+            if (tokenPromptDeclined) return false;
+            const input = window.prompt('请输入 TreeSTRM 访问口令\n（服务器 config.json 的 access_token 字段，或环境变量 TREESTRM_ACCESS_TOKEN）');
+            if (!input || !input.trim()) {
+                // 取消后不再弹窗，避免 2.5s 轮询反复打扰；刷新页面可重新输入
+                tokenPromptDeclined = true;
+                return false;
+            }
+            if (/[^\x21-\x7E]/.test(input.trim())) {
+                // HTTP 头只允许 ASCII，非法字符会让 fetch 直接抛错
+                window.alert('访问口令只能包含英文字母、数字和符号');
+                return true;
+            }
+            localStorage.setItem(ACCESS_TOKEN_KEY, input.trim());
+            return true;
+        }
+
+        window.fetch = async (input, init = {}) => {
+            const url = typeof input === 'string' ? input : input.url;
+            if (!url.startsWith('/api/')) return rawFetch(input, init);
+            let res;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const usedToken = localStorage.getItem(ACCESS_TOKEN_KEY) || '';
+                const headers = new Headers(init.headers || {});
+                headers.set('X-Access-Token', usedToken);
+                res = await rawFetch(input, { ...init, headers });
+                if (res.status !== 401) return res;
+                // 并发请求中其他请求可能已更新口令，直接用新口令重试，不重复弹窗
+                const tokenChanged = (localStorage.getItem(ACCESS_TOKEN_KEY) || '') !== usedToken;
+                if (!tokenChanged && !askAccessToken()) return res;
+            }
+            return res;
+        };
+
         let globalConfig = {};
 
         function switchTab(tabId) {

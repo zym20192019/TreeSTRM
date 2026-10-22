@@ -1,5 +1,5 @@
 import scraper_service
-import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex
+import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex, secrets, hmac
 from urllib.parse import unquote
 from xml.sax.saxutils import escape as xml_escape
 from concurrent.futures import ThreadPoolExecutor
@@ -1244,6 +1244,39 @@ from engine.cleaner import clean_orphan_metadata_for_category
 
 app = FastAPI(title="TreeSTRM 目录树监控控制台", version="2.2.0")
 
+# ----------------- 访问口令鉴权 -----------------
+# /api/* 会返回 115 Cookie、AI api_key 等凭据且服务监听 0.0.0.0，必须鉴权。
+# 口令优先级：环境变量 > config.json 的 access_token > 首次启动自动生成并写回 config.json
+ACCESS_TOKEN_ENV = "TREESTRM_ACCESS_TOKEN"
+ACCESS_TOKEN_HEADER = "X-Access-Token"
+
+def ensure_access_token() -> str:
+    env_token = os.environ.get(ACCESS_TOKEN_ENV, "").strip()
+    if env_token:
+        return env_token
+    cfg = load_config()
+    token = str(cfg.get("access_token") or "").strip()
+    if not token:
+        token = secrets.token_urlsafe(24)
+        cfg["access_token"] = token
+        save_config(cfg)
+        print(f"[TreeSTRM] 已自动生成访问口令并写入 {CONFIG_FILE} 的 access_token 字段: {token}", flush=True)
+    return token
+
+ACCESS_TOKEN = ensure_access_token()
+
+def public_config(cfg: dict) -> dict:
+    """返回给前端的配置不回显访问口令本身"""
+    return {k: v for k, v in cfg.items() if k != "access_token"}
+
+@app.middleware("http")
+async def require_access_token(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        supplied = request.headers.get(ACCESS_TOKEN_HEADER, "")
+        if not hmac.compare_digest(supplied.encode("utf-8"), ACCESS_TOKEN.encode("utf-8")):
+            return JSONResponse(status_code=401, content={"detail": "访问口令错误或缺失"})
+    return await call_next(request)
+
 class RuleModel(BaseModel):
     name: str
     cid: str
@@ -1361,7 +1394,7 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
 
 @app.get("/api/config")
 def get_config():
-    return load_config()
+    return public_config(load_config())
 
 @app.post("/api/config")
 def update_config(data: ConfigModel):
@@ -1379,7 +1412,7 @@ def update_config(data: ConfigModel):
     cfg["auto_sync_enabled"] = data.auto_sync_enabled
     cfg["auto_sync_interval_mins"] = data.auto_sync_interval_mins
     save_config(cfg)
-    return {"status": "ok", "config": cfg}
+    return {"status": "ok", "config": public_config(cfg)}
 
 # ----------------- 动态热调速 API -----------------
 
