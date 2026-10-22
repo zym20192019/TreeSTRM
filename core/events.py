@@ -8,10 +8,13 @@ import json
 import os
 import requests
 from typing import List
-from core.config import SPEED_FILE
+from core.config import SPEED_FILE, DATA_DIR
 
+LOG_DIR = os.path.join(DATA_DIR, "logs")
+
+# 全进程唯一的实时日志缓冲区：app.py 与 engine/services 各模块共用，/api/status 读取此处
 live_log_messages: List[str] = []
-MAX_LIVE_LOGS = 300
+MAX_LIVE_LOGS = 1000
 
 TG_BOT_TOKEN = ""
 TG_CHAT_ID = "5662349315"
@@ -23,6 +26,15 @@ def push_log(msg: str):
     live_log_messages.append(entry)
     if len(live_log_messages) > MAX_LIVE_LOGS:
         live_log_messages.pop(0)
+
+    # 7 天持久化滚动存储
+    today = time.strftime("%Y-%m-%d")
+    log_file = os.path.join(LOG_DIR, f"treestrm_{today}.log")
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 def get_live_logs() -> List[str]:
     return list(live_log_messages)

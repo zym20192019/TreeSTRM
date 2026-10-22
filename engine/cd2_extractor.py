@@ -20,6 +20,24 @@ from typing import Optional, Dict, Tuple
 from xml.etree import ElementTree as ET
 
 
+def map_to_cd2_path(target: str, cd2_mount_path: Optional[str] = None, stream_prefix: Optional[str] = None) -> str:
+    """将 STRM 中的远程播放 URL（URL 编码）映射为本地 CD2 物理挂载路径"""
+    mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
+    if stream_prefix and target.startswith(stream_prefix):
+        rel = urllib.parse.unquote(target[len(stream_prefix):].lstrip("/"))
+        return os.path.join(mount_root, rel)
+    if target.startswith("http://") or target.startswith("https://"):
+        # 通用兜底：截取 /d/115/ 之后的相对路径
+        if "/d/115/" in target:
+            return os.path.join(mount_root, urllib.parse.unquote(target.split("/d/115/", 1)[1]))
+        if "/115/" in target:
+            return os.path.join(mount_root, urllib.parse.unquote(target.split("/115/", 1)[1]))
+        return target
+    if target.startswith('/movies/'):
+        return '/Movies/' + target[8:]
+    return target
+
+
 def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optional[Dict] = None) -> Dict:
     """利用轻量 ffprobe 提取全量音视频媒体信息与文件大小，内置重试与强有效性校验"""
     info = {
@@ -194,24 +212,8 @@ def extract_cover_by_cd2(
     """走 CD2 本地挂载 Fast Seek 进行高效降权抽帧，顺便提取完整元数据反哺 NFO"""
     diagnostic = diagnostic if diagnostic is not None else {}
     try:
-        host_target = target_path
-
         # 动态将远程 URL 前缀映射为本地 CD2 真实物理挂载路径
-        if stream_prefix and host_target.startswith(stream_prefix):
-            rel = urllib.parse.unquote(host_target[len(stream_prefix):].lstrip("/"))
-            mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
-            host_target = os.path.join(mount_root, rel)
-        elif host_target.startswith("http://") or host_target.startswith("https://"):
-            # 通用兜底：截取 /d/115/ 之后的相对路径
-            mount_root = cd2_mount_path or "/Movies/CloudDrive/115"
-            if "/d/115/" in host_target:
-                rel = urllib.parse.unquote(host_target.split("/d/115/", 1)[1])
-                host_target = os.path.join(mount_root, rel)
-            elif "/115/" in host_target:
-                rel = urllib.parse.unquote(host_target.split("/115/", 1)[1])
-                host_target = os.path.join(mount_root, rel)
-        elif host_target.startswith('/movies/'):
-            host_target = '/Movies/' + host_target[8:]
+        host_target = map_to_cd2_path(target_path, cd2_mount_path, stream_prefix)
 
         # CD2 FUSE 挂载点瞬时响应容错重试机制（防并发与 IO 抖动误判）
         exists = False

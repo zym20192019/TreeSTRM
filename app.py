@@ -1,6 +1,7 @@
 import scraper_service
 import os, sys, re, io, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex
 from urllib.parse import unquote
+from xml.sax.saxutils import escape as xml_escape
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
@@ -29,8 +30,7 @@ COMPREHENSIVE_SUBTITLE_EXTS = {
     '.srt', '.ass', '.ssa', '.vtt', '.sub', '.sup', '.idx', '.smi'
 }
 
-live_log_messages: List[str] = []
-MAX_LIVE_LOGS = 1000
+from core.events import push_log, live_log_messages
 
 TG_BOT_TOKEN = ""
 TG_CHAT_ID = "5662349315"
@@ -54,22 +54,6 @@ def cleanup_logs_older_than_7_days():
                     os.remove(p)
                 except Exception:
                     pass
-    except Exception:
-        pass
-
-def push_log(msg: str):
-    ts = time.strftime("%H:%M:%S")
-    entry = f"[{ts}] {msg}"
-    live_log_messages.append(entry)
-    if len(live_log_messages) > MAX_LIVE_LOGS:
-        live_log_messages.pop(0)
-
-    # 7 天持久化滚动存储
-    today = time.strftime("%Y-%m-%d")
-    log_file = os.path.join(LOG_DIR, f"treestrm_{today}.log")
-    try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
     except Exception:
         pass
 
@@ -632,12 +616,20 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
             push_log(f"❌ AI 翻译兜底失败，相关 NFO 保持缺失: {folder_hint} ({len(batch)}个): {str(exc)[:180]}")
     return result
 
+def _xml_text(value: Any) -> str:
+    """AI 返回内容可能含 & < >，不转义会生成 Emby 无法解析的坏 NFO"""
+    return xml_escape(str(value or ""))
+
+def _cdata_text(value: Any) -> str:
+    # CDATA 内唯一非法序列是 ]]>，拆成两个相邻 CDATA 段
+    return str(value or "").replace("]]>", "]]]]><![CDATA[>")
+
 def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: int = 0, width: int = 1920, height: int = 1080):
-    tags_xml = "\n".join([f"  <tag>{t}</tag>" for t in meta.get("tags", [])])
-    genres_xml = "\n".join([f"  <genre>{g}</genre>" for g in meta.get("genres", [])])
-    studio = meta.get("studio", "")
-    title = meta.get("title", "")
-    summary = meta.get("summary", "")
+    tags_xml = "\n".join([f"  <tag>{_xml_text(t)}</tag>" for t in meta.get("tags", [])])
+    genres_xml = "\n".join([f"  <genre>{_xml_text(g)}</genre>" for g in meta.get("genres", [])])
+    studio = _xml_text(meta.get("studio", ""))
+    title = _cdata_text(meta.get("title", ""))
+    summary = _cdata_text(meta.get("summary", ""))
     
     filesize_tag = f"  <filesize>{filesize}</filesize>\n" if filesize > 0 else ""
     runtime_tag = f"  <runtime>{runtime_mins}</runtime>\n" if runtime_mins > 0 else ""
@@ -666,7 +658,7 @@ def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: i
 
 # ----------------- CD2 本地通道 Fast Seek 抽帧核心 (0 验证码、0 拦截、0.9s 秒级出图) -----------------
 
-from engine.cd2_extractor import extract_cover_by_cd2, probe_media_info, update_nfo_with_streamdetails
+from engine.cd2_extractor import extract_cover_by_cd2, probe_media_info, update_nfo_with_streamdetails, map_to_cd2_path
 
 
 def has_streamdetails_in_nfo(nfo_path: str) -> bool:
@@ -696,6 +688,10 @@ def is_subtitle_strm(strm_path: str, filename: str) -> bool:
 
 
 # ----------------- 全量目录树 STRM 极速生成 (独立模块) -----------------
+
+# 过期 STRM 清理熔断：单次待删数量 >= MIN_COUNT 且占本地比例 > MAX_RATIO 时拒绝清理
+ORPHAN_GUARD_MIN_COUNT = 500
+ORPHAN_GUARD_MAX_RATIO = 0.3
 
 def sync_strms_pure_1to1(
     video_paths: List[str],
@@ -745,6 +741,12 @@ def sync_strms_pure_1to1(
     
     if auto_cleanup and len(expected_strms) > 0:
         orphan_strms = existing_local_strms - set(expected_strms.keys())
+        orphan_ratio = len(orphan_strms) / len(existing_local_strms) if existing_local_strms else 0.0
+        if len(orphan_strms) >= ORPHAN_GUARD_MIN_COUNT and orphan_ratio > ORPHAN_GUARD_MAX_RATIO:
+            # 目录树下载截断/解码丢行时，解析结果会偏少，此时清理会误删大量有效 STRM
+            push_log(f"🛑 安全熔断：待清理过期 STRM {len(orphan_strms)} 个，占本地 {round(orphan_ratio * 100, 1)}%，"
+                     f"超过 {int(ORPHAN_GUARD_MAX_RATIO * 100)}% 阈值，疑似目录树不完整，本次跳过清理！")
+            orphan_strms = set()
         if orphan_strms:
             push_log(f"发现 {len(orphan_strms)} 个云端已删除的过期 STRM，正在安全清理索引...")
             for old_p in orphan_strms:
@@ -864,6 +866,14 @@ def fetch_folder_pickcodes(session: requests.Session, category_name: str, parent
 gov_lock = threading.Lock()
 
 def process_single_category_job(job: dict):
+    """异常时也必须释放运行槽位，否则 queue_worker_loop 会永久认为有任务在跑，整条队列卡死"""
+    global current_running_job
+    try:
+        _run_category_job(job)
+    finally:
+        current_running_job = None
+
+def _run_category_job(job: dict):
     global current_running_job
     category_name = job.get("category")
     extract_covers = job.get("extract_covers", True)
@@ -1142,21 +1152,9 @@ def process_single_category_job(job: dict):
                             push_log(f"⚠️ [补齐封面失败] 【{v_name}】({reason}) ➔ {detail[:2200]}")
                     else:
                         # 封面已有，仅需深度探针补充音视频流信息与大小
-                        host_target = raw_t
                         cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
                         s_prefix = cfg.get("default_prefix", "http://23.19.231.70:5244/d/115")
-                        if s_prefix and host_target.startswith(s_prefix):
-                            rel = host_target[len(s_prefix):].lstrip("/")
-                            host_target = os.path.join(cd2_root, rel)
-                        elif host_target.startswith("http://") or host_target.startswith("https://"):
-                            if "/d/115/" in host_target:
-                                rel = host_target.split("/d/115/", 1)[1]
-                                host_target = os.path.join(cd2_root, rel)
-                            elif "/115/" in host_target:
-                                rel = host_target.split("/115/", 1)[1]
-                                host_target = os.path.join(cd2_root, rel)
-                        elif host_target.startswith('/movies/'):
-                            host_target = '/Movies/' + host_target[8:]
+                        host_target = map_to_cd2_path(raw_t, cd2_root, s_prefix)
                         m_info = probe_media_info(host_target, timeout_sec=35)
                         if update_nfo_with_streamdetails(nfo_p, m_info):
                             with gov_lock:
@@ -1282,79 +1280,84 @@ sync_lock = threading.Lock()
 def do_sync_task(rule_ids: Optional[List[str]] = None):
     with sync_lock:
         sync_progress["is_syncing"] = True
-        push_log("======== 开始执行目录树 STRM 全量对账同步 ========")
-        cfg = load_config()
-        cookie = cfg.get("cookie")
-        if not cookie:
-            push_log("❌ 错误：115 Cookie 为空，请先在下方保存 Cookie！")
+        try:
+            _run_sync_rules(rule_ids)
+        finally:
+            # 任何异常都必须复位，否则 is_syncing 永久为 True，后续所有同步请求都会被拒绝
             sync_progress["is_syncing"] = False
-            return
-            
-        rules = cfg.get("rules", [])
-        layer_limit = int(cfg.get("layer_limit") or 25)
+            sync_progress["stage"] = "就绪"
+
+def _run_sync_rules(rule_ids: Optional[List[str]]):
+    push_log("======== 开始执行目录树 STRM 全量对账同步 ========")
+    cfg = load_config()
+    cookie = cfg.get("cookie")
+    if not cookie:
+        push_log("❌ 错误：115 Cookie 为空，请先在下方保存 Cookie！")
+        return
         
-        for r in rules:
-            if not r.get("enabled", True): continue
-            if rule_ids and r.get("id") not in rule_ids: continue
+    rules = cfg.get("rules", [])
+    layer_limit = int(cfg.get("layer_limit") or 25)
+    
+    for r in rules:
+        if not r.get("enabled", True): continue
+        if rule_ids and r.get("id") not in rule_ids: continue
+        
+        start_t = time.time()
+        r_name = r.get("name")
+        cid = r.get("cid", "0")
+        out_dir = r.get("output_dir") or cfg.get("default_output")
+        prefix = r.get("prefix") or cfg.get("default_prefix")
+        sync_subs = r.get("sync_subtitles", True)
+        auto_clean = r.get("auto_cleanup_orphan", True)
+        
+        sync_progress["rule_name"] = r_name
+        sync_progress["stage"] = f"正在同步【{r_name}】"
+        push_log(f"▶ 正在处理规则【{r_name}】(CID: {cid}) ➔ 落地: {out_dir}")
+        
+        try:
+            tree_text = export_115_tree(cookie, cid=cid, layer_limit=layer_limit)
+            videos, subs, ext_stats = parse_tree_1to1(tree_text, target_dir_name=r_name, include_subs=sync_subs)
+            vc, vs, vd = sync_strms_pure_1to1(
+                videos, subs, out_dir, prefix, 
+                auto_cleanup=auto_clean
+            )
+            elapsed = round(time.time() - start_t, 2)
             
-            start_t = time.time()
-            r_name = r.get("name")
-            cid = r.get("cid", "0")
-            out_dir = r.get("output_dir") or cfg.get("default_output")
-            prefix = r.get("prefix") or cfg.get("default_prefix")
-            sync_subs = r.get("sync_subtitles", True)
-            auto_clean = r.get("auto_cleanup_orphan", True)
+            r["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            r["last_status"] = f"成功 (新增 +{vc}, 跳过 {vs}, 清理过期 -{vd})"
+            r["video_count"] = len(videos)
+            r["sub_count"] = len(subs)
+            r["ext_stats"] = ext_stats
             
-            sync_progress["rule_name"] = r_name
-            sync_progress["stage"] = f"正在同步【{r_name}】"
-            push_log(f"▶ 正在处理规则【{r_name}】(CID: {cid}) ➔ 落地: {out_dir}")
+            append_history({
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "rule_name": r_name,
+                "status": "success",
+                "total_videos": len(videos),
+                "total_subs": len(subs),
+                "created": vc,
+                "skipped": vs,
+                "deleted": vd,
+                "elapsed_sec": elapsed,
+                "output_dir": out_dir,
+                "prefix": prefix,
+                "ext_stats": ext_stats
+            })
+        except Exception as e:
+            r["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            r["last_status"] = f"失败: {str(e)}"
+            push_log(f"❌ 规则【{r_name}】执行失败: {str(e)}")
+            append_history({
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "rule_name": r_name,
+                "status": "error",
+                "message": str(e)
+            })
+        
+        time.sleep(2)
             
-            try:
-                tree_text = export_115_tree(cookie, cid=cid, layer_limit=layer_limit)
-                videos, subs, ext_stats = parse_tree_1to1(tree_text, target_dir_name=r_name, include_subs=sync_subs)
-                vc, vs, vd = sync_strms_pure_1to1(
-                    videos, subs, out_dir, prefix, 
-                    auto_cleanup=auto_clean
-                )
-                elapsed = round(time.time() - start_t, 2)
-                
-                r["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                r["last_status"] = f"成功 (新增 +{vc}, 跳过 {vs}, 清理过期 -{vd})"
-                r["video_count"] = len(videos)
-                r["sub_count"] = len(subs)
-                r["ext_stats"] = ext_stats
-                
-                append_history({
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "rule_name": r_name,
-                    "status": "success",
-                    "total_videos": len(videos),
-                    "total_subs": len(subs),
-                    "created": vc,
-                    "skipped": vs,
-                    "deleted": vd,
-                    "elapsed_sec": elapsed,
-                    "output_dir": out_dir,
-                    "prefix": prefix,
-                    "ext_stats": ext_stats
-                })
-            except Exception as e:
-                r["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                r["last_status"] = f"失败: {str(e)}"
-                push_log(f"❌ 规则【{r_name}】执行失败: {str(e)}")
-                append_history({
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "rule_name": r_name,
-                    "status": "error",
-                    "message": str(e)
-                })
-            
-            time.sleep(2)
-                
-        save_config(cfg)
-        sync_progress["is_syncing"] = False
-        sync_progress["stage"] = "就绪"
-        push_log("======== 全部全量任务执行完毕 ========")
+    save_config(cfg)
+    push_log("======== 全部全量任务执行完毕 ========")
 
 @app.get("/api/config")
 def get_config():
