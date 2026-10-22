@@ -31,6 +31,20 @@ def create_115_session(cookie_str: str) -> requests.Session:
             s.cookies.set(k.strip(), v.strip())
     return s
 
+# (连接超时, 读取超时)：大目录（数十万文件）提交导出时 115 响应可能超过 20 秒
+SUBMIT_TIMEOUT = (10, 60)
+SUBMIT_RETRIES = 10
+
+def _get_with_retry(session: requests.Session, url: str, timeout, attempts: int = 3) -> requests.Response:
+    for attempt in range(1, attempts + 1):
+        try:
+            return session.get(url, timeout=timeout)
+        except requests.RequestException as e:
+            if attempt == attempts:
+                raise
+            push_log(f"⚠️ 115 请求失败 ({str(e)[:80]})，5 秒后重试 ({attempt}/{attempts})...")
+            time.sleep(5)
+
 def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
     """向 115 官方发起目录树导出任务并下载解码（提交排队自动重试，拿不到 export_id 时按 CID 搜索兜底）"""
     push_log(f"向 115 发起目录树导出 (CID: {cid}, 最深: {layer_limit}层)...")
@@ -43,15 +57,22 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
     }
     
     export_id = None
-    # 循环尝试提交导出任务，若提示“有类似任务正在处理”，等待几秒重试获取全新独立的 export_id
-    for submit_try in range(1, 10):
-        res = session.post('https://webapi.115.com/files/export_dir', data=data, timeout=20).json()
+    # 循环尝试提交导出任务，若提示“有类似任务正在处理”，等待几秒重试获取全新独立的 export_id。
+    # 大目录提交时 115 可能迟迟不响应：网络超时也重试；超时的请求可能已在服务端建好任务，
+    # 重试拿不到 export_id 时由下方按 CID 搜索兜底接管。
+    for submit_try in range(1, SUBMIT_RETRIES + 1):
+        try:
+            res = session.post('https://webapi.115.com/files/export_dir', data=data, timeout=SUBMIT_TIMEOUT).json()
+        except (requests.RequestException, ValueError) as e:
+            push_log(f"⚠️ 115 导出任务提交无响应 ({str(e)[:80]})，等待重试 ({submit_try}/{SUBMIT_RETRIES})...")
+            time.sleep(5)
+            continue
         if isinstance(res.get('data'), dict) and res['data'].get('export_id'):
             export_id = res['data']['export_id']
             push_log(f"✅ 115 目录树任务提交成功，任务ID: {export_id}")
             break
         err_msg = res.get('error', '未知错误')
-        push_log(f"⚠️ 115 导出任务排队中 ({err_msg})，等待重试 ({submit_try}/10)...")
+        push_log(f"⚠️ 115 导出任务排队中 ({err_msg})，等待重试 ({submit_try}/{SUBMIT_RETRIES})...")
         time.sleep(3)
         
     pick_code = None
@@ -97,13 +118,13 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
     if not pick_code:
         raise TimeoutError("等待 115 目录树生成超时")
         
-    dl_res = session.get(f'https://webapi.115.com/files/download?pickcode={pick_code}', timeout=15).json()
+    dl_res = _get_with_retry(session, f'https://webapi.115.com/files/download?pickcode={pick_code}', timeout=(10, 30)).json()
     dl_url = dl_res.get('file_url') or (dl_res.get('data') or {}).get('file_url')
     if not dl_url:
         raise RuntimeError("获取目录树下载直链失败")
-        
+
     push_log(f"正在携带认证 Cookie 从 115 CDN 拉取目录树...")
-    resp = session.get(dl_url, timeout=90)
+    resp = _get_with_retry(session, dl_url, timeout=(10, 180))
     
     if resp.status_code != 200 or len(resp.content) < 500:
         raise RuntimeError(f"目录树下载失败 (HTTP {resp.status_code}, 长度: {len(resp.content)} bytes)")
