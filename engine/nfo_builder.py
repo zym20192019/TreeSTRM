@@ -1,66 +1,49 @@
 #!/usr/bin/env python3
 """
-TreeSTRM 标准 NFO XML 纯正构建器
-特性：
-1. 真实数据驱动：仅根据官方元数据落地，绝不凭空生造假 NFO
-2. 兼容 Kodi / Emby 标准规范 (<movie> 根节点，含 title, studio, plot, actor, genre)
-3. 严格字符集 UTF-8 与 XML 安全转义
+TreeSTRM NFO 构建器：AI 治理流水线生成的 Emby / Kodi Movie NFO
+文本字段统一 XML 转义，标题/简介用 CDATA 包裹并处理 ]]> 序列
 """
 
-import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional
+from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
-def build_movie_nfo_xml(meta: Dict[str, Any], base_filename: str) -> str:
-    """构建 Emby / Kodi 100% 兼容的 Movie NFO XML 文本"""
-    root = ET.Element("movie")
-    
-    title = meta.get('title') or base_filename
-    ET.SubElement(root, "title").text = title
-    ET.SubElement(root, "originaltitle").text = title
-    ET.SubElement(root, "sorttitle").text = title
-    
-    if meta.get('premiered'):
-        prem = str(meta.get('premiered'))
-        ET.SubElement(root, "premiered").text = prem
-        ET.SubElement(root, "year").text = prem[:4]
-        
-    plot = meta.get('plot') or meta.get('summary') or ""
-    if plot:
-        ET.SubElement(root, "plot").text = plot
-        ET.SubElement(root, "outline").text = plot
-        
-    studio = meta.get('studio') or meta.get('publisher') or ""
-    if studio:
-        ET.SubElement(root, "studio").text = studio
-        ET.SubElement(root, "publisher").text = studio
-        
-    for act in meta.get('actors', []):
-        if act:
-            actor_el = ET.SubElement(root, "actor")
-            ET.SubElement(actor_el, "name").text = str(act).strip()
-            
-    for tag in meta.get('tags', []):
-        if tag:
-            ET.SubElement(root, "tag").text = str(tag).strip()
 
-    for genre in meta.get('genres', []):
-        if genre:
-            ET.SubElement(root, "genre").text = str(genre).strip()
-            
-    ET.SubElement(root, "lockdata").text = "true"
-    
-    # 视频流信息（如果提供）
-    width = meta.get('width', 1920)
-    height = meta.get('height', 1080)
-    fileinfo = ET.SubElement(root, "fileinfo")
-    streamdetails = ET.SubElement(fileinfo, "streamdetails")
-    video = ET.SubElement(streamdetails, "video")
-    ET.SubElement(video, "width").text = str(width)
-    ET.SubElement(video, "height").text = str(height)
-    
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode('utf-8')
+def _xml_text(value: Any) -> str:
+    """AI 返回内容可能含 & < >，不转义会生成 Emby 无法解析的坏 NFO"""
+    return xml_escape(str(value or ""))
 
-def write_movie_nfo(nfo_path: str, meta: Dict[str, Any], base_filename: str):
-    content = build_movie_nfo_xml(meta, base_filename)
+def _cdata_text(value: Any) -> str:
+    # CDATA 内唯一非法序列是 ]]>，拆成两个相邻 CDATA 段
+    return str(value or "").replace("]]>", "]]]]><![CDATA[>")
+
+def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: int = 0, width: int = 1920, height: int = 1080):
+    tags_xml = "\n".join([f"  <tag>{_xml_text(t)}</tag>" for t in meta.get("tags", [])])
+    genres_xml = "\n".join([f"  <genre>{_xml_text(g)}</genre>" for g in meta.get("genres", [])])
+    studio = _xml_text(meta.get("studio", ""))
+    title = _cdata_text(meta.get("title", ""))
+    summary = _cdata_text(meta.get("summary", ""))
+    
+    filesize_tag = f"  <filesize>{filesize}</filesize>\n" if filesize > 0 else ""
+    runtime_tag = f"  <runtime>{runtime_mins}</runtime>\n" if runtime_mins > 0 else ""
+    
+    content = f"""<?xml version="1.0" encoding="UTF-8" ?>
+<movie>
+  <title><![CDATA[{title}]]></title>
+  <originaltitle><![CDATA[{title}]]></originaltitle>
+  <sorttitle><![CDATA[{title}]]></sorttitle>
+  <studio>{studio}</studio>
+  <plot><![CDATA[{summary}]]></plot>
+  <outline><![CDATA[{summary}]]></outline>
+{genres_xml}
+{tags_xml}
+{runtime_tag}{filesize_tag}  <fileinfo>
+    <streamdetails>
+      <video>
+        <width>{width}</width>
+        <height>{height}</height>
+      </video>
+    </streamdetails>
+  </fileinfo>
+</movie>"""
     with open(nfo_path, "w", encoding="utf-8") as f:
         f.write(content)

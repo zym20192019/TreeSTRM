@@ -1,976 +1,1397 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TreeSTRM v2.2 - 媒体治理与对账平台</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TreeSTRM 控制台</title>
+<style>
+    :root {
+        --bg: #0b0f17;
+        --panel: #121826;
+        --panel-2: #172033;
+        --border: #232c3f;
+        --border-strong: #2f3a52;
+        --text: #e5e9f0;
+        --text-2: #9aa4b6;
+        --text-3: #6b7588;
+        --accent: #6d7cff;
+        --accent-hover: #8290ff;
+        --accent-soft: rgba(109, 124, 255, .14);
+        --ok: #3fbf7f;
+        --ok-soft: rgba(63, 191, 127, .14);
+        --warn: #e5a83b;
+        --warn-soft: rgba(229, 168, 59, .14);
+        --danger: #ef5b5b;
+        --danger-soft: rgba(239, 91, 91, .14);
+        --info: #3fb6d3;
+        --radius: 10px;
+        --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        -webkit-font-smoothing: antialiased;
+    }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    a { color: var(--accent); }
+    code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+    .hidden { display: none !important; }
+    .mono { font-family: var(--mono); }
+    .muted { color: var(--text-2); }
+    .faint { color: var(--text-3); }
+    .nowrap { white-space: nowrap; }
 
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['"Plus Jakarta Sans"', 'system-ui', '-apple-system', 'sans-serif'],
-                        mono: ['"JetBrains Mono"', 'monospace'],
-                    },
-                    colors: {
-                        brand: {
-                            50: '#eef2ff',
-                            100: '#e0e7ff',
-                            400: '#818cf8',
-                            500: '#6366f1',
-                            600: '#4f46e5',
-                            700: '#4338ca',
-                        }
-                    }
-                }
-            }
-        }
-    </script>
-    <style>
-        body {
-            background: radial-gradient(circle at 50% 0%, #171d33 0%, #090d16 65%);
-            min-height: 100vh;
-        }
-        .glass-panel {
-            background: rgba(17, 23, 38, 0.75);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.07);
-        }
-        .glass-card {
-            background: rgba(22, 31, 51, 0.6);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            transition: all 0.2s ease-in-out;
-        }
-        .glass-card:hover {
-            border-color: rgba(99, 102, 241, 0.3);
-            transform: translateY(-2px);
-            box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.5);
-        }
-        .terminal-scroll::-webkit-scrollbar {
-            width: 6px;
-        }
-        .terminal-scroll::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-        }
-        @keyframes pulse-fast {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
-        .animate-pulse-fast {
-            animation: pulse-fast 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-    </style>
+    /* ---------- 布局 ---------- */
+    .app { display: grid; grid-template-columns: 216px 1fr; min-height: 100vh; }
+    .sidebar {
+        background: var(--panel); border-right: 1px solid var(--border);
+        padding: 18px 12px; position: sticky; top: 0; height: 100vh;
+        display: flex; flex-direction: column; gap: 4px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; }
+    .brand-logo {
+        width: 32px; height: 32px; border-radius: 8px; background: var(--accent);
+        display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 15px;
+    }
+    .brand-name { font-weight: 700; font-size: 16px; }
+    .brand-sub { font-size: 11px; color: var(--text-3); }
+    .nav-item {
+        display: flex; align-items: center; gap: 10px; width: 100%;
+        padding: 9px 12px; border: 0; border-radius: 8px; background: none;
+        color: var(--text-2); cursor: pointer; text-align: left;
+    }
+    .nav-item:hover { background: var(--panel-2); color: var(--text); }
+    .nav-item.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+    .nav-item svg { width: 17px; height: 17px; flex: none; }
+    .nav-badge {
+        margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 10px;
+        background: var(--warn-soft); color: var(--warn); font-size: 11px; text-align: center; font-weight: 600;
+    }
+    .sidebar-foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--text-3); }
+    .sidebar-foot button { background: none; border: 0; padding: 0; color: var(--text-2); cursor: pointer; text-decoration: underline; }
+
+    .main { min-width: 0; display: flex; flex-direction: column; }
+    .topbar {
+        position: sticky; top: 0; z-index: 20; background: rgba(11, 15, 23, .92);
+        backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+        padding: 12px 28px; display: flex; align-items: center; gap: 16px;
+    }
+    .topbar h1 { font-size: 17px; margin: 0; font-weight: 650; }
+    .topbar .spacer { flex: 1; }
+    .content { padding: 24px 28px 64px; max-width: 1280px; width: 100%; }
+
+    /* ---------- 通用组件 ---------- */
+    .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border-strong);
+        background: var(--panel-2); color: var(--text); cursor: pointer; white-space: nowrap; font-size: 13px;
+        transition: background .12s, border-color .12s;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--text-3); background: #1d2840; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .btn-danger { color: var(--danger); }
+    .btn-danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
+    .btn-danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+    .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; }
+    .btn-ghost { background: none; border-color: transparent; color: var(--text-2); }
+    .btn-ghost:hover:not(:disabled) { background: var(--panel-2); border-color: transparent; color: var(--text); }
+    .btn .spin { width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+    .card-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+    .card-head h2, .card-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
+    .card-head .spacer { flex: 1; }
+    .card-body { padding: 18px; }
+    .section-gap > * + * { margin-top: 20px; }
+
+    .tag {
+        display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px;
+        border-radius: 11px; font-size: 12px; font-weight: 550; white-space: nowrap;
+        background: var(--panel-2); color: var(--text-2);
+    }
+    .tag-ok { background: var(--ok-soft); color: var(--ok); }
+    .tag-warn { background: var(--warn-soft); color: var(--warn); }
+    .tag-danger { background: var(--danger-soft); color: var(--danger); }
+    .tag-accent { background: var(--accent-soft); color: var(--accent-hover); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+    .dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .3; } }
+
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .stat { padding: 16px 18px; }
+    .stat-label { font-size: 12px; color: var(--text-2); }
+    .stat-value { font-size: 24px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .stat-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+    .meter { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+    .meter-track { flex: 1; height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+    .meter-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s; }
+    .meter-fill.ok { background: var(--ok); }
+    .meter-fill.warn { background: var(--warn); }
+    .meter-text { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; min-width: 92px; text-align: right; }
+
+    .empty { padding: 48px 20px; text-align: center; color: var(--text-3); }
+
+    /* ---------- 全局进度条 ---------- */
+    .activity { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+    .activity-item { padding: 12px 16px; display: grid; grid-template-columns: auto 1fr auto; gap: 6px 14px; align-items: center; }
+    .activity-item .title { font-weight: 600; font-size: 13px; }
+    .activity-item .detail { font-size: 12px; color: var(--text-2); grid-column: 2 / 4; }
+    .activity-item .meter-track { grid-column: 1 / 4; height: 5px; }
+    .activity-item .pct { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+
+    /* ---------- 表格 ---------- */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+        text-align: left; font-size: 12px; font-weight: 600; color: var(--text-3);
+        padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; background: var(--panel);
+    }
+    td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover td { background: rgba(255, 255, 255, .015); }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.actions { text-align: right; white-space: nowrap; }
+    td.actions .btn + .btn { margin-left: 6px; }
+    .cat-name { font-weight: 600; }
+    .cat-path { font-size: 12px; color: var(--text-3); font-family: var(--mono); }
+    .check { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+
+    /* ---------- 工具栏 ---------- */
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+    .search {
+        height: 32px; width: 220px; padding: 0 12px; border-radius: 8px;
+        border: 1px solid var(--border-strong); background: var(--bg); outline: none;
+    }
+    .search:focus { border-color: var(--accent); }
+    .chips { display: inline-flex; gap: 4px; padding: 3px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+    .chip { height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--text-2); cursor: pointer; font-size: 12px; }
+    .chip:hover { color: var(--text); }
+    .chip.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+    .chip .count { color: var(--text-3); margin-left: 3px; font-weight: 400; }
+    .select {
+        height: 32px; padding: 0 28px 0 10px; border-radius: 8px; border: 1px solid var(--border-strong);
+        background: var(--bg); appearance: none; cursor: pointer;
+        background-image: linear-gradient(45deg, transparent 50%, var(--text-2) 50%), linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+        background-position: right 13px center, right 9px center; background-size: 4px 4px; background-repeat: no-repeat;
+    }
+    .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-2); user-select: none; }
+    .bulkbar {
+        display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+        background: var(--accent-soft); border-bottom: 1px solid var(--border); font-size: 13px;
+    }
+
+    /* ---------- 规则卡片 ---------- */
+    .rules { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+    .rule { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+    .rule-head { display: flex; align-items: flex-start; gap: 10px; }
+    .rule-title { font-size: 15px; font-weight: 650; }
+    .rule-meta { font-size: 12px; color: var(--text-3); font-family: var(--mono); word-break: break-all; }
+    .rule-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .rule-stats .k { font-size: 11px; color: var(--text-3); }
+    .rule-stats .v { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .rule-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .rule-foot .status { font-size: 12px; color: var(--text-2); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ---------- 日志 ---------- */
+    .logbox {
+        height: calc(100vh - 290px); min-height: 320px; overflow-y: auto; padding: 12px 16px;
+        background: #080b11; font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
+        border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius);
+    }
+    .logbox p { margin: 0; white-space: pre-wrap; word-break: break-all; }
+    .log-ok { color: var(--ok); }
+    .log-err { color: var(--danger); }
+    .log-warn { color: var(--warn); }
+    .log-ai { color: #a99bff; }
+    .log-img { color: var(--info); }
+    .jump-latest { position: sticky; bottom: 0; float: right; }
+
+    /* ---------- 表单 ---------- */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 20px; }
+    .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .field.full { grid-column: 1 / -1; }
+    .field label { font-size: 13px; font-weight: 600; }
+    .field .hint { font-size: 12px; color: var(--text-3); }
+    .input, .textarea {
+        width: 100%; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--border-strong);
+        background: var(--bg); outline: none; font-family: var(--mono); font-size: 13px;
+    }
+    .input { height: 36px; }
+    .textarea { resize: vertical; min-height: 76px; }
+    .input:focus, .textarea:focus { border-color: var(--accent); }
+    .input:disabled { color: var(--text-3); cursor: not-allowed; }
+    .input-group { display: flex; gap: 6px; }
+    .input-group .input { flex: 1; }
+    .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 0; }
+    .switch-row .text { display: flex; flex-direction: column; }
+    .switch { position: relative; width: 38px; height: 22px; flex: none; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch span {
+        position: absolute; inset: 0; border-radius: 11px; background: var(--border-strong); cursor: pointer; transition: background .15s;
+    }
+    .switch span::after {
+        content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%;
+        background: #fff; transition: transform .15s;
+    }
+    .switch input:checked + span { background: var(--accent); }
+    .switch input:checked + span::after { transform: translateX(16px); }
+    .switch input:focus-visible + span { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+    .savebar {
+        position: sticky; bottom: 16px; margin-top: 20px; padding: 12px 18px; display: flex; align-items: center; gap: 12px;
+        background: var(--panel-2); border: 1px solid var(--accent); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+    }
+    .savebar .spacer { flex: 1; }
+
+    /* ---------- 弹窗 / 提示 ---------- */
+    dialog {
+        border: 1px solid var(--border-strong); border-radius: 12px; background: var(--panel); color: var(--text);
+        padding: 0; width: min(440px, calc(100vw - 32px)); box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, .55); }
+    .dlg-body { padding: 20px 22px 6px; }
+    .dlg-body h3 { margin: 0 0 8px; font-size: 16px; }
+    .dlg-body p { margin: 0 0 12px; color: var(--text-2); white-space: pre-line; }
+    .dlg-body .field + .field { margin-top: 14px; }
+    .dlg-error { color: var(--danger); font-size: 12px; min-height: 18px; margin-top: 8px; }
+    .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 22px 18px; }
+    .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+    .toast {
+        max-width: 420px; padding: 10px 14px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border-strong);
+        border-left: 3px solid var(--accent); box-shadow: 0 8px 20px rgba(0, 0, 0, .4); font-size: 13px; animation: toast-in .18s ease-out;
+    }
+    .toast.ok { border-left-color: var(--ok); }
+    .toast.warn { border-left-color: var(--warn); }
+    .toast.error { border-left-color: var(--danger); }
+    @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
+
+    @media (max-width: 1100px) {
+        .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 820px) {
+        .app { grid-template-columns: 1fr; }
+        .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+        .brand { padding: 4px 10px; width: 100%; }
+        .nav-item { width: auto; }
+        .sidebar-foot { display: none; }
+        .topbar, .content { padding-left: 16px; padding-right: 16px; }
+        .form-grid { grid-template-columns: 1fr; }
+        .search { width: 100%; }
+        .rules { grid-template-columns: 1fr; }
+    }
+</style>
 </head>
-<body class="text-slate-200 font-sans antialiased selection:bg-indigo-500 selection:text-white pb-20">
-
-    <!-- 顶部导航栏 -->
-    <header class="sticky top-0 z-50 glass-panel border-b border-slate-800/80 px-6 py-3.5 mb-8">
-        <div class="max-w-7xl mx-auto flex items-center justify-between">
-            <div class="flex items-center space-x-3">
-                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-                    <i class="bi bi-folder-symlink-fill text-white text-lg"></i>
-                </div>
-                <div>
-                    <div class="flex items-center space-x-2">
-                        <span class="font-bold text-lg tracking-tight text-white">TreeSTRM</span>
-                        <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">v2.2 Pro</span>
-                    </div>
-                    <p class="text-xs text-slate-400">115 目录树直映 & 媒体库对账治理控制台</p>
-                </div>
-            </div>
-
-            <div class="flex items-center space-x-4">
-                <!-- 动态调速控件 -->
-                <div class="flex items-center space-x-1 px-3 py-1.5 rounded-xl bg-slate-900/80 border border-slate-700/80 text-xs">
-                    <span class="text-slate-400 font-medium mr-1"><i class="bi bi-shield-check text-emerald-400 mr-1"></i>流控:</span>
-                    <button onclick="setSpeed(1.0)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-indigo-600 text-slate-200 transition font-mono" id="btn-speed-10">1.0s</button>
-                    <button onclick="setSpeed(1.5)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-indigo-600 text-slate-200 transition font-mono" id="btn-speed-15">1.5s</button>
-                    <button onclick="setSpeed(2.0)" class="px-2.5 py-0.5 rounded bg-indigo-600 text-white font-mono font-bold transition shadow-md shadow-indigo-600/30" id="btn-speed-20">2.0s</button>
-                    <button onclick="setSpeed(3.0)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-indigo-600 text-slate-200 transition font-mono" id="btn-speed-30">3.0s</button>
-                </div>
-
-                <div id="status-container" class="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-slate-800/60 border border-slate-700/50 text-xs">
-                    <span class="relative flex h-2 w-2">
-                        <span id="status-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 hidden"></span>
-                        <span id="status-dot" class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                    </span>
-                    <span id="sync-status-badge" class="font-medium text-slate-300">系统就绪</span>
-                </div>
-
-                <button onclick="triggerSync()" class="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-sm font-semibold shadow-lg shadow-indigo-600/25 transition duration-150">
-                    <i class="bi bi-arrow-repeat"></i>
-                    <span>全量 STRM 对账</span>
-                </button>
+<body>
+<div class="app">
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-logo">T</div>
+            <div>
+                <div class="brand-name">TreeSTRM</div>
+                <div class="brand-sub">115 目录树 STRM 与媒体治理</div>
             </div>
         </div>
-    </header>
-
-    <main class="max-w-7xl mx-auto px-6">
-        <!-- 统计面板 -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            <div class="glass-card rounded-2xl p-5">
-                <div class="flex items-center justify-between text-slate-400 mb-2">
-                    <span class="text-xs font-semibold tracking-wider uppercase">全量视频索引</span>
-                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-                        <i class="bi bi-film"></i>
-                    </div>
-                </div>
-                <div class="text-2xl font-bold text-white tracking-tight" id="stat-videos">189,439</div>
-                <div class="text-xs text-slate-400 mt-1">1:1 纯净秒级映射</div>
-            </div>
-
-            <div class="glass-card rounded-2xl p-5">
-                <div class="flex items-center justify-between text-slate-400 mb-2">
-                    <span class="text-xs font-semibold tracking-wider uppercase">外挂字幕总数</span>
-                    <div class="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
-                        <i class="bi bi-badge-cc"></i>
-                    </div>
-                </div>
-                <div class="text-2xl font-bold text-white tracking-tight" id="stat-subs">7</div>
-                <div class="text-xs text-slate-400 mt-1">同轨自动绑定</div>
-            </div>
-
-            <div class="glass-card rounded-2xl p-5">
-                <div class="flex items-center justify-between text-slate-400 mb-2">
-                    <span class="text-xs font-semibold tracking-wider uppercase">自动排队队列</span>
-                    <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
-                        <i class="bi bi-list-task"></i>
-                    </div>
-                </div>
-                <div class="text-2xl font-bold text-amber-400 tracking-tight" id="stat-queue-count">0 <span class="text-xs text-slate-400 font-normal">个专区等待中</span></div>
-                <div class="text-xs text-slate-400 mt-1">支持多选随时点，自动顺延</div>
-            </div>
-
-            <div class="glass-card rounded-2xl p-5">
-                <div class="flex items-center justify-between text-slate-400 mb-2">
-                    <span class="text-xs font-semibold tracking-wider uppercase">AI 治理引擎</span>
-                    <div class="w-8 h-8 rounded-lg bg-violet-500/10 text-violet-400 flex items-center justify-center">
-                        <i class="bi bi-robot"></i>
-                    </div>
-                </div>
-                <div class="text-2xl font-bold text-violet-400 tracking-tight" id="stat-ai-status">OpenRouter</div>
-                <div class="text-xs text-slate-400 mt-1">MiniMax-M2.7 (免费)</div>
-            </div>
+        <button class="nav-item active" data-action="nav" data-view="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            概览
+        </button>
+        <button class="nav-item" data-action="nav" data-view="categories">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            专区治理
+            <span class="nav-badge hidden" id="nav-queue-badge"></span>
+        </button>
+        <button class="nav-item" data-action="nav" data-view="logs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 17 6-6-6-6M12 19h8"/></svg>
+            运行日志
+        </button>
+        <button class="nav-item" data-action="nav" data-view="settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+            系统设置
+        </button>
+        <div class="sidebar-foot">
+            <div id="foot-delay">流控间隔 —</div>
+            <button data-action="relogin">重新输入访问口令</button>
         </div>
+    </aside>
 
-        <!-- 3 大全局标签页导航 -->
-        <div class="flex space-x-2 border-b border-slate-800 mb-6">
-            <button onclick="switchTab('tasks')" id="tab-btn-tasks" class="px-5 py-3 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center space-x-2 transition">
-                <i class="bi bi-kanban"></i>
-                <span>任务总览</span>
-            </button>
-            <button onclick="switchTab('dashboard')" id="tab-btn-dashboard" class="px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition">
-                <i class="bi bi-terminal-fill"></i>
-                <span>实时日志 & 调度</span>
-            </button>
-            <button onclick="switchTab('settings')" id="tab-btn-settings" class="px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition">
-                <i class="bi bi-sliders"></i>
-                <span>系统设置 & 刮削</span>
-            </button>
-        </div>
+    <div class="main">
+        <header class="topbar">
+            <h1 id="page-title">概览</h1>
+            <span id="global-state" class="tag"><span class="dot"></span>连接中</span>
+            <div class="spacer"></div>
+            <label class="toggle" title="115 / CD2 请求的最小间隔，服务端强制不低于 2 秒">
+                流控
+                <select class="select" id="speed-select" data-action-change="speed">
+                    <option value="2">2.0 秒</option>
+                    <option value="3">3.0 秒</option>
+                    <option value="5">5.0 秒</option>
+                    <option value="8">8.0 秒</option>
+                </select>
+            </label>
+            <button class="btn btn-primary" data-action="sync-all" id="btn-sync-all">全量对账</button>
+        </header>
 
-        <!-- ==================== TAB 1：任务总览 ==================== -->
-        <section id="tab-content-tasks" class="space-y-6">
-            
-            <!-- 视图 A：1级对账任务列表 -->
-            <div id="view-task-list" class="space-y-6">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h2 class="text-base font-bold text-white flex items-center space-x-2">
-                            <span>STRM 对账任务列表</span>
-                        </h2>
-                        <p class="text-xs text-slate-400 mt-0.5">支持为 115 的任意目录（如成人、电影、电视剧等）创建独立的 STRM 对账任务，点击进入其二级专区治理</p>
-                    </div>
-                    <button onclick="openAddRuleModal()" class="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 transition">
-                        <i class="bi bi-plus-lg"></i>
-                        <span>新建对账任务</span>
-                    </button>
+        <main class="content">
+            <div class="activity" id="activity"></div>
+
+            <!-- ============ 概览 ============ -->
+            <section data-view="overview" class="section-gap">
+                <div class="stats">
+                    <div class="card stat"><div class="stat-label">视频索引</div><div class="stat-value" id="st-videos">—</div><div class="stat-sub" id="st-videos-sub">&nbsp;</div></div>
+                    <div class="card stat"><div class="stat-label">封面覆盖</div><div class="stat-value" id="st-covers">—</div><div class="stat-sub" id="st-covers-sub">&nbsp;</div></div>
+                    <div class="card stat"><div class="stat-label">NFO 覆盖</div><div class="stat-value" id="st-nfos">—</div><div class="stat-sub" id="st-nfos-sub">&nbsp;</div></div>
+                    <div class="card stat"><div class="stat-label">治理队列</div><div class="stat-value" id="st-queue">—</div><div class="stat-sub" id="st-queue-sub">&nbsp;</div></div>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6" id="primary-tasks-container">
-                    <!-- 动态渲染任务卡片 -->
+                <div class="card">
+                    <div class="card-head">
+                        <h2>对账任务</h2>
+                        <span class="faint" style="font-size:12px">每个任务把 115 的一个目录 1:1 映射为本地 STRM</span>
+                        <div class="spacer"></div>
+                        <button class="btn btn-sm" data-action="add-rule">新建任务</button>
+                    </div>
+                    <div class="card-body"><div class="rules" id="rules"><div class="empty">加载中…</div></div></div>
                 </div>
 
-                <!-- 全局花销与 API 消耗统计 -->
-                <div class="glass-panel rounded-2xl p-6 shadow-2xl">
-                    <div class="flex items-center justify-between mb-4 border-b border-slate-800/80 pb-3">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-                                <i class="bi bi-cash-coin text-base"></i>
-                            </div>
-                            <div>
-                                <h3 class="text-sm font-bold text-white">全库治理花销 & 接口调度大盘</h3>
-                                <p class="text-xs text-slate-400">实时监控大模型审批 token 消耗、网盘请求水位与刮削吞吐</p>
-                            </div>
-                        </div>
-                        <span class="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            零本地下载 · 0 额外费用
-                        </span>
-                    </div>
-
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                        <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                            <div class="text-xs text-slate-400 mb-1">OpenRouter AI 治理花费</div>
-                            <div class="text-xl font-bold text-emerald-400 font-mono">$0.00 <span class="text-xs font-normal text-slate-400">(MiniMax 免费层)</span></div>
-                            <div class="text-[11px] text-slate-500 mt-1">已审批 18.9 万部目录标签</div>
-                        </div>
-                        <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                            <div class="text-xs text-slate-400 mb-1">115 官方大树同步耗时</div>
-                            <div class="text-xl font-bold text-white font-mono">16.36 MB <span class="text-xs font-normal text-slate-400">/ 25层</span></div>
-                            <div class="text-[11px] text-slate-500 mt-1">官方秒级全量差集对账</div>
-                        </div>
-                        <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                            <div class="text-xs text-slate-400 mb-1">CD2 FastSeek 抽帧吞吐</div>
-                            <div class="text-xl font-bold text-indigo-400 font-mono">0.9 s <span class="text-xs font-normal text-slate-400">/ 张</span></div>
-                            <div class="text-[11px] text-slate-500 mt-1">安全慢牛 2.0s 严格流控守护</div>
-                        </div>
-                        <div class="p-4 rounded-xl bg-slate-900/60 border border-slate-800">
-                            <div class="text-xs text-slate-400 mb-1">官方商业刮削引擎 (Amane式)</div>
-                            <div class="text-xl font-bold text-cyan-400 font-mono">ThePornDB <span class="text-xs font-normal text-slate-400">就绪</span></div>
-                            <div class="text-[11px] text-slate-500 mt-1">支持欧美Scene厂牌原画海报</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 视图 B：2级子专区工坊 -->
-            <div id="view-task-detail" class="space-y-6 hidden">
-                <div class="glass-panel rounded-2xl overflow-hidden shadow-2xl">
-                    <div class="px-6 py-4 border-b border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/40">
-                        <div class="flex items-center space-x-3">
-                            <button onclick="backToTaskList()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 text-xs font-semibold border border-indigo-500/30 transition shadow-sm">
-                                <i class="bi bi-arrow-left"></i>
-                                <span>返回上一级</span>
-                            </button>
-                            <div>
-                                <h2 class="text-base font-bold text-white flex items-center space-x-2">
-                                    <span id="current-task-detail-title">【成人】媒体库 ➔ 36 个独立子专区治理工坊</span>
-                                </h2>
-                                <p class="text-xs text-slate-400 mt-0.5"><b>🌟 自动排队已就绪</b>：随时点击其他专区的「全量查漏补缺」，任务自动加入排队序列，上一个完成后自动顺延推进！</p>
-                            </div>
-                        </div>
-                        <div class="flex items-center space-x-3">
-                            <label class="inline-flex items-center space-x-2 text-xs font-medium text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-800 transition" title="勾选后，全量查漏补缺将同时对已有封面的条目补充 4K/AAC/大小 等底层流信息">
-                                <input type="checkbox" id="chk-probe-streams" class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5">
-                                <span>深度补充音视频流信息</span>
-                            </label>
-                            <button id="btn-refresh-categories" onclick="loadCategories(true)" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
-                                <i class="bi bi-arrow-clockwise"></i>
-                                <span>刷新列表</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm">
-                            <thead class="bg-slate-900/60 text-xs text-slate-400 uppercase tracking-wider border-b border-slate-800">
-                                <tr>
-                                    <th class="px-6 py-3.5 font-semibold">专区名称</th>
-                                    <th class="px-6 py-3.5 font-semibold">当前状态</th>
-                                    <th class="px-6 py-3.5 font-semibold">视频总数</th>
-                                    <th class="px-6 py-3.5 font-semibold">封面覆盖率</th>
-                                    <th class="px-6 py-3.5 font-semibold">NFO 覆盖率</th>
-                                    <th class="px-6 py-3.5 text-right font-semibold">治理与维护操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="categories-tbody" class="divide-y divide-slate-800/60">
-                                <tr>
-                                    <td colspan="6" class="px-6 py-12 text-center text-slate-500">
-                                        <div class="inline-block animate-spin rounded-full h-5 w-5 border-2 border-indigo-500 border-t-transparent mb-2"></div>
-                                        <p>正在读取专区物理元数据状态...</p>
-                                    </td>
-                                </tr>
-                            </tbody>
+                <div class="card">
+                    <div class="card-head"><h2>最近同步记录</h2></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>时间</th><th>任务</th><th>结果</th><th class="num">视频</th><th class="num">新增</th><th class="num">清理</th><th class="num">耗时</th></tr></thead>
+                            <tbody id="history"><tr><td colspan="7" class="empty">暂无记录</td></tr></tbody>
                         </table>
                     </div>
                 </div>
-            </div>
+            </section>
 
-        </section>
-
-        <!-- ==================== TAB 2：实时日志 ==================== -->
-        <section id="tab-content-dashboard" class="space-y-6 hidden">
-            <div id="progress-container" class="glass-panel rounded-2xl p-5 hidden">
-                <div class="flex items-center justify-between text-sm mb-2">
-                    <span id="progress-title" class="font-semibold text-indigo-400 flex items-center space-x-2">
-                        <i class="bi bi-gear-wide-connected animate-spin"></i>
-                        <span id="progress-text">正在处理...</span>
-                    </span>
-                    <span id="progress-percent" class="font-mono text-xs text-slate-400 font-semibold">0%</span>
-                </div>
-                <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-                    <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-300 rounded-full" style="width: 0%"></div>
-                </div>
-            </div>
-
-            <div class="glass-panel rounded-2xl overflow-hidden">
-                <div class="px-6 py-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-900/40">
-                    <div class="flex items-center space-x-2">
-                        <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
-                        <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-                        <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
-                        <span class="ml-2 text-xs font-mono text-slate-400">live-stream.log</span>
-                    </div>
-                    <span class="text-xs text-slate-500 font-mono">SSE Stream Connected</span>
-                </div>
-                <div class="p-4 bg-black/40 font-mono text-xs leading-relaxed text-slate-300 h-80 overflow-y-auto terminal-scroll" id="terminal-logs">
-                    <p class="text-slate-500">[System] 控制台已就绪，等待任务调度...</p>
-                </div>
-            </div>
-        </section>
-
-        <!-- ==================== TAB 3：设置 ==================== -->
-        <section id="tab-content-settings" class="space-y-6 hidden">
-            <div class="glass-panel rounded-2xl p-6">
-                <h3 class="text-base font-bold text-white mb-4 flex items-center space-x-2">
-                    <i class="bi bi-stars text-cyan-400"></i>
-                    <span>TPDB (ThePornDB / Adult API) 官方商业刮削配置</span>
-                </h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">API Base URL</label>
-                        <input type="text" id="cfg-tpdb-base" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500 font-mono" value="https://api.theporndb.net">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">TPDB API Token (密钥)</label>
-                        <input type="password" id="cfg-tpdb-token" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500 font-mono" placeholder="填入 TPDB 授权 Token">
-                    </div>
-                </div>
-            </div>
-
-            <div class="glass-panel rounded-2xl p-6">
-                <h3 class="text-base font-bold text-white mb-4 flex items-center space-x-2">
-                    <i class="bi bi-robot text-indigo-400"></i>
-                    <span>OpenRouter 大模型智能审批配置</span>
-                </h3>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">API Base URL</label>
-                        <input type="text" id="cfg-ai-base" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" placeholder="https://openrouter.ai/api/v1">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">Model Name</label>
-                        <input type="text" id="cfg-ai-model" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" placeholder="minimax/minimax-m2.7:free">
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">API Key</label>
-                        <input type="password" id="cfg-ai-key" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono" placeholder="sk-or-v1-...">
-                    </div>
-                </div>
-            </div>
-
-            <div class="glass-panel rounded-2xl p-6">
-                <h3 class="text-base font-bold text-white mb-4 flex items-center space-x-2">
-                    <i class="bi bi-gear-fill text-indigo-400"></i>
-                    <span>全局对账与 115 基础配置</span>
-                </h3>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-400 mb-1.5">115 云盘 Cookie</label>
-                        <textarea id="cfg-cookie" rows="3" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" placeholder="UID=...; CID=...; SEID=..."></textarea>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                        <div class="space-y-1.5">
-                            <label class="block text-xs font-semibold text-slate-300">
-                                <i class="bi bi-play-circle text-indigo-400 mr-1"></i>STRM 远程播放流前缀
-                            </label>
-                            <input type="text" id="cfg-default-prefix" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="http://23.19.231.70:5244/d/115">
-                            <p class="text-[11px] text-slate-400 leading-relaxed">
-                                💡 <b>写入 .strm 文件的播放链接前缀</b>。推荐填 Alist WebDAV 或直链地址（如 <code>http://IP:5244/d/115</code>）。Emby 收到后会识别为外部远程流，<b>彻底免除服务端卡顿探测，实现 0.4 秒瞬间秒播</b>。
-                            </p>
+            <!-- ============ 专区治理 ============ -->
+            <section data-view="categories" class="hidden">
+                <div class="card">
+                    <div class="toolbar">
+                        <input class="search" id="cat-search" type="search" placeholder="搜索专区名称" autocomplete="off">
+                        <div class="chips" id="cat-filters">
+                            <button class="chip active" data-filter="all">全部<span class="count"></span></button>
+                            <button class="chip" data-filter="todo">待补齐<span class="count"></span></button>
+                            <button class="chip" data-filter="active">进行中<span class="count"></span></button>
+                            <button class="chip" data-filter="locked">已加锁<span class="count"></span></button>
                         </div>
-                        <div class="space-y-1.5">
-                            <label class="block text-xs font-semibold text-slate-300">
-                                <i class="bi bi-hdd-network text-emerald-400 mr-1"></i>CD2 本地挂载根路径
-                            </label>
-                            <input type="text" id="cfg-cd2-mount" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/CloudDrive/115">
-                            <p class="text-[11px] text-slate-400 leading-relaxed">
-                                💡 <b>本机 CloudDrive2 挂载 115 网盘的真实物理路径</b>（如 <code>/Movies/CloudDrive/115</code>）。TreeSTRM 在后台进行<b>封面黄金帧抽取、4K/AAC 流信息探针</b>时，会通过此路径直接读取视频文件。
-                            </p>
+                        <select class="select" id="cat-sort">
+                            <option value="name">按名称</option>
+                            <option value="videos">按视频数</option>
+                            <option value="cover">封面覆盖率低优先</option>
+                            <option value="nfo">NFO 覆盖率低优先</option>
+                        </select>
+                        <div class="spacer" style="flex:1"></div>
+                        <label class="toggle" title="治理时对已有封面但缺少分辨率/编码信息的条目补充流信息（会读取视频文件，耗时更长）">
+                            <input type="checkbox" class="check" id="probe-streams"> 同时补充音视频流信息
+                        </label>
+                        <button class="btn btn-sm" data-action="rescan" id="btn-rescan" title="重新统计本地磁盘上的 STRM / 封面 / NFO 数量">重新盘点</button>
+                    </div>
+                    <div class="bulkbar hidden" id="bulkbar">
+                        已选 <b id="bulk-count">0</b> 个专区
+                        <button class="btn btn-sm btn-primary" data-action="bulk-gov">加入治理队列</button>
+                        <button class="btn btn-sm btn-ghost" data-action="bulk-clear">取消选择</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:36px"><input type="checkbox" class="check" id="cat-check-all" title="全选当前列表中可治理的专区"></th>
+                                    <th>专区</th>
+                                    <th>状态</th>
+                                    <th class="num">视频</th>
+                                    <th>封面</th>
+                                    <th>NFO</th>
+                                    <th class="num">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cat-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============ 运行日志 ============ -->
+            <section data-view="logs" class="hidden">
+                <div class="card">
+                    <div class="card-head">
+                        <div class="chips" id="log-filters">
+                            <button class="chip active" data-log-filter="all">全部</button>
+                            <button class="chip" data-log-filter="problem">仅警告与错误</button>
                         </div>
-                        <div class="space-y-1.5">
-                            <label class="block text-xs font-semibold text-slate-300">
-                                <i class="bi bi-folder-check text-cyan-400 mr-1"></i>STRM 本地输出基准路径
-                            </label>
-                            <input type="text" id="cfg-default-output" class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono" value="/Movies/TreeStrms">
-                            <p class="text-[11px] text-slate-400 leading-relaxed">
-                                💡 <b>TreeSTRM 生成 .strm、.nfo 和封面图片的落盘目录</b>。Emby 媒体库直接添加此路径（如 <code>/Movies/TreeStrms/成人</code>）即可自动识别所有影视资源。
-                            </p>
-                        </div>
-                        <div class="space-y-1.5">
-                            <label class="block text-xs font-semibold text-slate-300">
-                                <i class="bi bi-cpu text-amber-400 mr-1"></i>抽帧并发线程数（暂不生效）
-                            </label>
-                            <input type="number" id="cfg-cover-threads" min="1" max="10" disabled class="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-slate-500 cursor-not-allowed focus:outline-none font-mono" value="3">
-                            <p class="text-[11px] text-slate-400 leading-relaxed">
-                                💡 为遵守 115 流控红线，抽帧/探针<b>强制单线程串行</b>访问 CD2 挂载点，此项当前不生效（保留以兼容旧配置）。
-                            </p>
+                        <div class="spacer"></div>
+                        <span class="faint" style="font-size:12px" id="log-meta"></span>
+                        <button class="btn btn-sm" data-action="log-bottom">回到最新</button>
+                    </div>
+                    <div class="logbox" id="logbox"><p class="faint">等待日志…</p></div>
+                </div>
+            </section>
+
+            <!-- ============ 系统设置 ============ -->
+            <section data-view="settings" class="hidden">
+                <form id="settings-form" class="section-gap" autocomplete="off" onsubmit="return false">
+                    <div class="card">
+                        <div class="card-head"><h3>115 与路径</h3></div>
+                        <div class="card-body form-grid">
+                            <div class="field full">
+                                <label for="s-cookie">115 Cookie</label>
+                                <div class="input-group">
+                                    <input class="input" type="password" id="s-cookie" placeholder="UID=...; CID=...; SEID=...">
+                                    <button type="button" class="btn" data-action="reveal" data-target="s-cookie">显示</button>
+                                </div>
+                                <span class="hint">用于导出目录树。留空时读取 /opt/115-agent/.env 中的 PAN115_COOKIE。</span>
+                            </div>
+                            <div class="field">
+                                <label for="s-prefix">STRM 播放地址前缀</label>
+                                <input class="input" id="s-prefix" placeholder="http://IP:5244/d/115">
+                                <span class="hint">写入 .strm 的链接前缀，通常是 Alist 直链地址。</span>
+                            </div>
+                            <div class="field">
+                                <label for="s-cd2">CD2 挂载根路径</label>
+                                <input class="input" id="s-cd2" placeholder="/Movies/CloudDrive/115">
+                                <span class="hint">抽取封面、读取流信息时通过此路径访问视频。</span>
+                            </div>
+                            <div class="field">
+                                <label for="s-output">STRM 输出目录</label>
+                                <input class="input" id="s-output" placeholder="/Movies/TreeStrms">
+                                <span class="hint">.strm / .nfo / 封面的落盘根目录，Emby 媒体库指向其子目录。</span>
+                            </div>
+                            <div class="field">
+                                <label for="s-layer">目录树导出深度</label>
+                                <input class="input" id="s-layer" type="number" min="1" max="50">
+                                <span class="hint">115 导出目录树的最大层级，默认 25。</span>
+                            </div>
+                            <div class="field full">
+                                <div class="switch-row">
+                                    <div class="text"><label for="s-subs">同步外挂字幕</label><span class="hint">解析目录树时统计字幕文件。</span></div>
+                                    <label class="switch"><input type="checkbox" id="s-subs"><span></span></label>
+                                </div>
+                                <div class="switch-row">
+                                    <div class="text"><label for="s-cleanup">清理云端已删除的 STRM</label><span class="hint">单次待删超过 500 个且占比超过 30% 时会自动熔断跳过。</span></div>
+                                    <label class="switch"><input type="checkbox" id="s-cleanup"><span></span></label>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    <div class="flex justify-end pt-2">
-                        <button onclick="saveGlobalConfig()" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-sm font-semibold shadow-lg shadow-indigo-600/30 transition">
-                            <i class="bi bi-check2-circle mr-1"></i>保存全局配置
-                        </button>
+
+                    <div class="card">
+                        <div class="card-head"><h3>自动同步</h3></div>
+                        <div class="card-body form-grid">
+                            <div class="field">
+                                <div class="switch-row">
+                                    <div class="text"><label for="s-autosync">定时全量对账</label><span class="hint">按间隔自动对所有启用的任务执行对账。</span></div>
+                                    <label class="switch"><input type="checkbox" id="s-autosync"><span></span></label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label for="s-interval">间隔（分钟）</label>
+                                <input class="input" id="s-interval" type="number" min="5" step="5">
+                                <span class="hint">最小 5 分钟。</span>
+                            </div>
+                        </div>
                     </div>
-                </div>
-            </div>
-        </section>
 
-    </main>
+                    <div class="card">
+                        <div class="card-head"><h3>AI 元数据生成</h3></div>
+                        <div class="card-body form-grid">
+                            <div class="field full">
+                                <div class="switch-row">
+                                    <div class="text"><label for="s-ai-enabled">启用 AI 生成 NFO</label><span class="hint">关闭后治理只抽取封面，不再生成缺失的 NFO。</span></div>
+                                    <label class="switch"><input type="checkbox" id="s-ai-enabled"><span></span></label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label for="s-ai-base">API 地址</label>
+                                <input class="input" id="s-ai-base" placeholder="https://openrouter.ai/api/v1">
+                            </div>
+                            <div class="field">
+                                <label for="s-ai-model">模型</label>
+                                <input class="input" id="s-ai-model" placeholder="minimax/minimax-m2.7:free">
+                            </div>
+                            <div class="field">
+                                <label for="s-ai-key">API Key</label>
+                                <div class="input-group">
+                                    <input class="input" type="password" id="s-ai-key" placeholder="sk-or-v1-...">
+                                    <button type="button" class="btn" data-action="reveal" data-target="s-ai-key">显示</button>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label for="s-ai-batch">每批文件数</label>
+                                <input class="input" id="s-ai-batch" type="number" min="1" max="200">
+                                <span class="hint">单次请求提交的文件数，过大容易超时，建议 30–50。</span>
+                            </div>
+                        </div>
+                    </div>
 
-    <script>
-        // ---------- 访问口令：所有 /api/ 请求自动携带 X-Access-Token，401 时弹窗索取 ----------
-        const ACCESS_TOKEN_KEY = 'treestrm_access_token';
-        const rawFetch = window.fetch.bind(window);
-        let tokenPromptDeclined = false;
+                    <div class="card">
+                        <div class="card-head"><h3>ThePornDB 刮削</h3></div>
+                        <div class="card-body form-grid">
+                            <div class="field">
+                                <label for="s-tpdb-base">API 地址</label>
+                                <input class="input" id="s-tpdb-base" placeholder="https://api.theporndb.net">
+                            </div>
+                            <div class="field">
+                                <label for="s-tpdb-token">API Token</label>
+                                <div class="input-group">
+                                    <input class="input" type="password" id="s-tpdb-token" placeholder="留空使用内置 Token">
+                                    <button type="button" class="btn" data-action="reveal" data-target="s-tpdb-token">显示</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
-        function askAccessToken() {
-            if (tokenPromptDeclined) return false;
-            const input = window.prompt('请输入 TreeSTRM 访问口令\n（服务器 config.json 的 access_token 字段，或环境变量 TREESTRM_ACCESS_TOKEN）');
-            if (!input || !input.trim()) {
-                // 取消后不再弹窗，避免 2.5s 轮询反复打扰；刷新页面可重新输入
-                tokenPromptDeclined = true;
-                return false;
-            }
-            if (/[^\x21-\x7E]/.test(input.trim())) {
-                // HTTP 头只允许 ASCII，非法字符会让 fetch 直接抛错
-                window.alert('访问口令只能包含英文字母、数字和符号');
-                return true;
-            }
-            localStorage.setItem(ACCESS_TOKEN_KEY, input.trim());
-            return true;
+                    <div class="card">
+                        <div class="card-head"><h3>Telegram 通知</h3></div>
+                        <div class="card-body form-grid">
+                            <div class="field">
+                                <label for="s-tg-token">Bot Token</label>
+                                <div class="input-group">
+                                    <input class="input" type="password" id="s-tg-token" placeholder="123456:ABC-DEF...">
+                                    <button type="button" class="btn" data-action="reveal" data-target="s-tg-token">显示</button>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label for="s-tg-chat">Chat ID</label>
+                                <input class="input" id="s-tg-chat" placeholder="例如 123456789">
+                                <span class="hint">两项都填写后，专区治理完成时推送通知。</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="savebar hidden" id="savebar">
+                        <span>设置有未保存的修改</span>
+                        <div class="spacer"></div>
+                        <button type="button" class="btn btn-ghost" data-action="settings-reset">放弃修改</button>
+                        <button type="button" class="btn btn-primary" data-action="settings-save" id="btn-save">保存设置</button>
+                    </div>
+                </form>
+            </section>
+        </main>
+    </div>
+</div>
+
+<dialog id="dlg-confirm">
+    <div class="dlg-body"><h3 id="confirm-title"></h3><p id="confirm-message"></p></div>
+    <div class="dlg-foot">
+        <button class="btn btn-ghost" id="confirm-cancel">取消</button>
+        <button class="btn btn-primary" id="confirm-ok">确定</button>
+    </div>
+</dialog>
+
+<dialog id="dlg-rule">
+    <form method="dialog" id="rule-form" novalidate>
+        <div class="dlg-body">
+            <h3>新建对账任务</h3>
+            <p>把 115 上的一个目录映射为本地 STRM。任务名必须与该目录在网盘中的名称一致。</p>
+            <div class="field"><label for="r-name">任务名称（115 目录名）</label><input class="input" id="r-name" placeholder="例如：电影" required></div>
+            <div class="field"><label for="r-cid">目录 CID</label><input class="input" id="r-cid" placeholder="网盘目录 URL 中的 cid 参数" required></div>
+            <div class="field"><label for="r-output">输出目录（可选）</label><input class="input" id="r-output" placeholder="默认使用全局 STRM 输出目录"></div>
+            <div class="field"><label for="r-prefix">播放地址前缀（可选）</label><input class="input" id="r-prefix" placeholder="默认使用全局前缀"></div>
+            <div class="dlg-error" id="rule-error"></div>
+        </div>
+        <div class="dlg-foot">
+            <button type="button" class="btn btn-ghost" data-close="dlg-rule">取消</button>
+            <button type="submit" class="btn btn-primary" id="rule-submit">创建</button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="dlg-login">
+    <form method="dialog" id="login-form" novalidate>
+        <div class="dlg-body">
+            <h3>输入访问口令</h3>
+            <p>口令位于服务器 config.json 的 access_token 字段，或环境变量 TREESTRM_ACCESS_TOKEN；首次启动时也会打印在服务日志中。</p>
+            <div class="field"><label for="login-token">访问口令</label><input class="input" id="login-token" type="password" autocomplete="current-password"></div>
+            <div class="dlg-error" id="login-error"></div>
+        </div>
+        <div class="dlg-foot"><button type="submit" class="btn btn-primary">进入控制台</button></div>
+    </form>
+</dialog>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+'use strict';
+
+// =====================================================================
+// 基础工具
+// =====================================================================
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+// 目录名 / 文件名 / 日志来自网盘与文件系统，插入 HTML 前一律转义
+function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+const fmtNum = n => Number(n || 0).toLocaleString('zh-CN');
+const pct = (part, total) => (total > 0 ? Math.min(100, Math.round(part / total * 100)) : 0);
+function fmtDuration(sec) {
+    sec = Math.round(Number(sec) || 0);
+    if (sec < 60) return `${sec} 秒`;
+    if (sec < 3600) return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+    return `${Math.floor(sec / 3600)} 小时 ${Math.floor(sec % 3600 / 60)} 分`;
+}
+
+function toast(message, type = 'info', ms = 3800) {
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = message;
+    $('#toasts').appendChild(el);
+    setTimeout(() => el.remove(), ms);
+}
+
+function confirmDialog({ title, message, okText = '确定', danger = false }) {
+    const dlg = $('#dlg-confirm');
+    $('#confirm-title').textContent = title;
+    $('#confirm-message').textContent = message || '';
+    const ok = $('#confirm-ok');
+    ok.textContent = okText;
+    ok.className = danger ? 'btn btn-danger-solid' : 'btn btn-primary';
+    return new Promise(resolve => {
+        const finish = value => { dlg.close(); cleanup(); resolve(value); };
+        const onOk = () => finish(true);
+        const onCancel = () => finish(false);
+        const onClose = () => { cleanup(); resolve(false); };
+        function cleanup() {
+            ok.removeEventListener('click', onOk);
+            $('#confirm-cancel').removeEventListener('click', onCancel);
+            dlg.removeEventListener('cancel', onClose);
         }
+        ok.addEventListener('click', onOk);
+        $('#confirm-cancel').addEventListener('click', onCancel);
+        dlg.addEventListener('cancel', onClose);
+        dlg.showModal();
+        ok.focus();
+    });
+}
 
-        window.fetch = async (input, init = {}) => {
-            const url = typeof input === 'string' ? input : input.url;
-            if (!url.startsWith('/api/')) return rawFetch(input, init);
-            let res;
-            for (let attempt = 0; attempt < 3; attempt++) {
-                const usedToken = localStorage.getItem(ACCESS_TOKEN_KEY) || '';
-                const headers = new Headers(init.headers || {});
-                headers.set('X-Access-Token', usedToken);
-                res = await rawFetch(input, { ...init, headers });
-                if (res.status !== 401) return res;
-                // 并发请求中其他请求可能已更新口令，直接用新口令重试，不重复弹窗
-                const tokenChanged = (localStorage.getItem(ACCESS_TOKEN_KEY) || '') !== usedToken;
-                if (!tokenChanged && !askAccessToken()) return res;
-            }
-            return res;
-        };
+async function withBusy(button, fn) {
+    if (!button) return fn();
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = `<span class="spin"></span>${original}`;
+    try { return await fn(); } finally { button.disabled = false; button.innerHTML = original; }
+}
 
-        let globalConfig = {};
+// =====================================================================
+// 访问口令与 API
+// =====================================================================
+const TOKEN_KEY = 'treestrm_access_token';
+let loginWaiter = null;
 
-        // 目录名/文件名/日志来自网盘与文件系统，插入 innerHTML 前必须转义
-        function esc(value) {
-            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
-        }
-        // 用于 onclick="fn(...)" 内联参数：JSON 字符串字面量 + HTML 属性转义
-        function jsArg(value) {
-            return esc(JSON.stringify(String(value ?? '')));
-        }
-
-        function switchTab(tabId) {
-            ['tasks', 'dashboard', 'settings'].forEach(t => {
-                const btn = document.getElementById(`tab-btn-${t}`);
-                const content = document.getElementById(`tab-content-${t}`);
-                if (btn && content) {
-                    if (t === tabId) {
-                        btn.className = "px-5 py-3 text-sm font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center space-x-2 transition";
-                        content.classList.remove('hidden');
-                    } else {
-                        btn.className = "px-5 py-3 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center space-x-2 transition";
-                        content.classList.add('hidden');
-                    }
-                }
-            });
-            if (tabId === 'tasks') {
-                loadRulesList();
-            }
-        }
-
-        function enterTaskDetail(taskId, taskName) {
-            document.getElementById('view-task-list').classList.add('hidden');
-            document.getElementById('view-task-detail').classList.remove('hidden');
-            document.getElementById('current-task-detail-title').innerText = `【${taskName}】媒体库 ➔ 36 个独立子专区治理工坊`;
-            loadCategories();
-        }
-
-        function backToTaskList() {
-            document.getElementById('view-task-detail').classList.add('hidden');
-            document.getElementById('view-task-list').classList.remove('hidden');
-            loadRulesList();
-        }
-
-        async function loadRulesList() {
-            const container = document.getElementById('primary-tasks-container');
-            if (!container) return;
-            try {
-                const res = await fetch('/api/rules');
-                const rules = await res.json();
-                if (!rules || rules.length === 0) {
-                    container.innerHTML = `<div class="col-span-2 text-center py-12 text-slate-500">暂无对账任务，点击右上角「新建对账任务」开始创建</div>`;
+function requestLogin(errorText) {
+    if (!loginWaiter) {
+        loginWaiter = new Promise(resolve => {
+            const dlg = $('#dlg-login');
+            $('#login-error').textContent = errorText || '';
+            $('#login-token').value = '';
+            const form = $('#login-form');
+            const onSubmit = e => {
+                e.preventDefault();
+                const value = $('#login-token').value.trim();
+                // HTTP 请求头只允许 ASCII，否则 fetch 会直接抛错
+                if (!value || /[^\x21-\x7E]/.test(value)) {
+                    $('#login-error').textContent = '口令只能包含英文字母、数字和符号';
                     return;
                 }
+                localStorage.setItem(TOKEN_KEY, value);
+                form.removeEventListener('submit', onSubmit);
+                dlg.close();
+                resolve();
+            };
+            form.addEventListener('submit', onSubmit);
+            // 未登录时不允许 Esc 关闭
+            dlg.addEventListener('cancel', e => e.preventDefault(), { once: true });
+            dlg.showModal();
+            $('#login-token').focus();
+        }).finally(() => { loginWaiter = null; });
+    }
+    return loginWaiter;
+}
 
-                container.innerHTML = rules.map(t => {
-                    const isChengren = t.name === '成人' || t.id === 'chengren_all';
-                    return `
-                        <div onclick="enterTaskDetail(${jsArg(t.id)}, ${jsArg(t.name)})" class="glass-card rounded-2xl p-6 transition-all duration-300 relative overflow-hidden group cursor-pointer hover:border-indigo-500/50 hover:shadow-indigo-500/10">
-                            <div class="flex items-start justify-between mb-4">
-                                <div class="flex items-center space-x-3">
-                                    <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-2xl shadow-lg shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-                                        <i class="bi ${isChengren ? 'bi-shield-shaded' : 'bi-folder2-open'}"></i>
-                                    </div>
-                                    <div>
-                                        <div class="flex items-center space-x-2">
-                                            <h3 class="text-lg font-bold text-white group-hover:text-indigo-400 transition-colors">${esc(t.name)}</h3>
-                                            <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-mono">CID: ${esc(t.cid)}</span>
-                                        </div>
-                                        <p class="text-xs text-slate-400 mt-1">本地挂载: ${esc(t.output_dir)}/${esc(t.name)}</p>
-                                    </div>
-                                </div>
-                                <div class="w-8 h-8 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition">
-                                    <i class="bi bi-chevron-right text-sm"></i>
-                                </div>
-                            </div>
-
-                            <div class="grid grid-cols-3 gap-3 my-4 p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80">
-                                <div>
-                                    <div class="text-[11px] text-slate-400">视频总数</div>
-                                    <div class="text-base font-bold text-white font-mono mt-0.5">${t.video_count ? t.video_count.toLocaleString() : 0} <span class="text-[10px] text-slate-400 font-normal">部</span></div>
-                                </div>
-                                <div>
-                                    <div class="text-[11px] text-slate-400">子专区数</div>
-                                    <div class="text-base font-bold text-indigo-400 font-mono mt-0.5">${t.sub_categories_count} <span class="text-[10px] text-slate-400 font-normal">个</span></div>
-                                </div>
-                                <div>
-                                    <div class="text-[11px] text-slate-400">海报 / NFO</div>
-                                    <div class="text-base font-bold text-emerald-400 font-mono mt-0.5">${t.cover_pct}% / ${t.nfo_pct}%</div>
-                                </div>
-                            </div>
-
-                            <div class="flex items-center justify-between text-xs pt-2 border-t border-slate-800/60">
-                                <span class="text-slate-400"><i class="bi bi-clock-history mr-1"></i>最近对账: ${esc(t.last_sync)}</span>
-                                <span class="font-semibold text-indigo-400 group-hover:translate-x-1 transition-transform flex items-center">
-                                    进入 2 级子专区治理 <i class="bi bi-arrow-right ml-1"></i>
-                                </span>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-            } catch (e) {
-                console.error(e);
+async function api(path, { method = 'GET', query, body } = {}) {
+    const url = query ? `${path}?${new URLSearchParams(query)}` : path;
+    for (;;) {
+        const token = localStorage.getItem(TOKEN_KEY) || '';
+        const headers = { 'X-Access-Token': token };
+        if (body !== undefined) headers['Content-Type'] = 'application/json';
+        const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+        if (res.status === 401) {
+            // 并发请求中其他请求可能已经换了新口令，直接重试；否则弹出登录框等待输入
+            if ((localStorage.getItem(TOKEN_KEY) || '') === token) {
+                await requestLogin(token ? '口令错误，请重新输入' : '');
             }
+            continue;
         }
+        let data = null;
+        try { data = await res.json(); } catch (_) { /* 非 JSON 响应 */ }
+        if (!res.ok) {
+            const detail = data && (data.detail || data.message);
+            throw new Error(typeof detail === 'string' ? detail : `请求失败（HTTP ${res.status}）`);
+        }
+        return data;
+    }
+}
 
-        async function openAddRuleModal() {
-            const name = prompt("请输入新建对账任务的媒体库名称（如：电影、电视剧、动漫、短剧）：");
-            if (!name) return;
-            const cid = prompt(`请输入【${name}】在 115 网盘上的对应目录 CID：`);
-            if (!cid) return;
+// =====================================================================
+// 状态
+// =====================================================================
+const state = {
+    view: 'overview',
+    rules: [],
+    categories: [],
+    status: null,
+    config: null,
+    catFilter: 'all',
+    catSearch: '',
+    catSort: 'name',
+    selected: new Set(),
+    logFilter: 'all',
+    logSig: '',
+    govSig: '',
+    settingsDirty: false,
+};
 
-            try {
-                const res = await fetch('/api/rules/add', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({name: name.trim(), cid: cid.trim()})
-                });
-                const data = await res.json();
-                if (res.ok) {
-                    alert(`✅ 成功创建对账任务【${name}】！`);
-                    loadRulesList();
-                } else {
-                    alert('创建失败: ' + (data.detail || '未知错误'));
-                }
-            } catch (e) {
-                alert('网络请求失败: ' + e);
+const VIEW_TITLES = { overview: '概览', categories: '专区治理', logs: '运行日志', settings: '系统设置' };
+
+function switchView(view) {
+    if (state.view === 'settings' && view !== 'settings' && state.settingsDirty) {
+        toast('设置有未保存的修改，已保留在表单中', 'warn');
+    }
+    state.view = view;
+    $$('.nav-item[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+    $$('section[data-view]').forEach(s => s.classList.toggle('hidden', s.dataset.view !== view));
+    $('#page-title').textContent = VIEW_TITLES[view];
+    if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+    if (view === 'overview') loadRules();
+    if (view === 'categories') loadCategories();
+    if (view === 'logs') renderLogs(true);
+    if (view === 'settings' && !state.settingsDirty) loadSettings();
+}
+
+// =====================================================================
+// 运行状态轮询
+// =====================================================================
+let polling = false;
+async function pollStatus() {
+    if (polling) return;
+    polling = true;
+    try {
+        state.status = await api('/api/status');
+        renderStatus();
+    } catch (e) {
+        setGlobalState('error', '无法连接服务');
+    } finally {
+        polling = false;
+    }
+}
+
+function setGlobalState(kind, text) {
+    const el = $('#global-state');
+    const cls = { idle: 'tag-ok', busy: 'tag-accent', error: 'tag-danger' }[kind] || '';
+    el.className = `tag ${cls}`;
+    el.innerHTML = `<span class="dot ${kind === 'busy' ? 'pulse' : ''}"></span>${esc(text)}`;
+}
+
+function renderStatus() {
+    const st = state.status;
+    const sp = st.sync_progress || {};
+    const gp = st.gov_progress || {};
+    const queue = st.governance_queue || [];
+    const running = st.current_running_job;
+
+    // 顶部状态与全局活动条
+    if (sp.is_syncing) setGlobalState('busy', '对账中');
+    else if (running) setGlobalState('busy', '治理中');
+    else setGlobalState('idle', '空闲');
+    $('#btn-sync-all').disabled = !!sp.is_syncing;
+
+    const items = [];
+    if (sp.is_syncing) {
+        const p = pct(sp.processed, sp.total);
+        items.push(`
+            <div class="card activity-item">
+                <span class="tag tag-accent"><span class="dot pulse"></span>全量对账</span>
+                <span class="title">${esc(sp.stage || '对账中')}</span>
+                <span class="pct">${sp.total ? `${p}%` : ''}</span>
+                <div class="meter-track"><div class="meter-fill" style="width:${sp.total ? p : 3}%"></div></div>
+                <span class="detail">${sp.total ? `写入 STRM ${fmtNum(sp.processed)} / ${fmtNum(sp.total)} · 新建 ${fmtNum(sp.created)} · 清理 ${fmtNum(sp.deleted)}` : '正在从 115 导出并解析目录树…'}</span>
+            </div>`);
+    }
+    if (running) {
+        const p = pct(gp.processed_videos, gp.total_videos);
+        items.push(`
+            <div class="card activity-item">
+                <span class="tag tag-accent"><span class="dot pulse"></span>专区治理</span>
+                <span class="title">${esc(running.category)}</span>
+                <span class="pct">${gp.total_videos ? `${p}%` : ''}</span>
+                <div class="meter-track"><div class="meter-fill" style="width:${gp.total_videos ? p : 3}%"></div></div>
+                <span class="detail">${gp.total_videos ? `已处理 ${fmtNum(gp.processed_videos)} / ${fmtNum(gp.total_videos)} · 封面 +${fmtNum(gp.covers_extracted)} · NFO +${fmtNum(gp.nfos_generated)}` : '正在盘点专区文件…'}${queue.length ? ` · 排队 ${queue.length} 个` : ''}</span>
+            </div>`);
+    }
+    $('#activity').innerHTML = items.join('');
+
+    // 侧栏与流控
+    const badge = $('#nav-queue-badge');
+    const pending = queue.length + (running ? 1 : 0);
+    badge.textContent = pending;
+    badge.classList.toggle('hidden', pending === 0);
+    const delay = Number(st.current_delay || 2);
+    const sel = $('#speed-select');
+    if (!$$('option', sel).some(o => Number(o.value) === delay)) {
+        sel.insertAdjacentHTML('beforeend', `<option value="${delay}">${delay.toFixed(1)} 秒</option>`);
+    }
+    if (document.activeElement !== sel) sel.value = String($$('option', sel).find(o => Number(o.value) === delay).value);
+    $('#foot-delay').textContent = `流控间隔 ${delay.toFixed(1)} 秒`;
+
+    // 概览：队列卡片与同步历史
+    $('#st-queue').textContent = pending ? `${pending}` : '0';
+    $('#st-queue-sub').textContent = running ? `正在治理：${running.category}` : '队列空闲';
+    renderHistory(st.history || []);
+
+    // 治理状态变化（开始/结束/队列变动）时刷新专区列表与任务统计
+    const govSig = JSON.stringify([running && running.category, queue.map(q => q.category), sp.is_syncing]);
+    if (govSig !== state.govSig) {
+        const first = state.govSig === '';
+        state.govSig = govSig;
+        if (!first) {
+            if (state.view === 'categories') loadCategories();
+            if (state.view === 'overview') loadRules();
+        }
+    }
+
+    if (state.view === 'logs') renderLogs();
+}
+
+function renderHistory(list) {
+    const body = $('#history');
+    if (!list.length) { body.innerHTML = '<tr><td colspan="7" class="empty">暂无记录</td></tr>'; return; }
+    body.innerHTML = list.map(h => {
+        const ok = h.status === 'success';
+        return `<tr>
+            <td class="mono nowrap faint">${esc(h.time)}</td>
+            <td class="nowrap">${esc(h.rule_name)}</td>
+            <td>${ok ? '<span class="tag tag-ok">成功</span>' : `<span class="tag tag-danger" title="${esc(h.message)}">失败</span> <span class="faint">${esc((h.message || '').slice(0, 60))}</span>`}</td>
+            <td class="num">${ok ? fmtNum(h.total_videos) : '—'}</td>
+            <td class="num">${ok ? `+${fmtNum(h.created)}` : '—'}</td>
+            <td class="num">${ok ? `-${fmtNum(h.deleted)}` : '—'}</td>
+            <td class="num nowrap">${ok ? fmtDuration(h.elapsed_sec) : '—'}</td>
+        </tr>`;
+    }).join('');
+}
+
+// =====================================================================
+// 概览：对账任务
+// =====================================================================
+async function loadRules() {
+    try {
+        state.rules = await api('/api/rules');
+        renderRules();
+    } catch (e) {
+        $('#rules').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+    }
+}
+
+function renderRules() {
+    const rules = state.rules;
+    const totalV = rules.reduce((s, r) => s + (r.video_count || 0), 0);
+    const totalC = rules.reduce((s, r) => s + (r.cover_count || 0), 0);
+    const totalN = rules.reduce((s, r) => s + (r.nfo_count || 0), 0);
+    $('#st-videos').textContent = fmtNum(totalV);
+    $('#st-videos-sub').textContent = `${rules.length} 个对账任务`;
+    $('#st-covers').textContent = `${pct(totalC, totalV)}%`;
+    $('#st-covers-sub').textContent = `${fmtNum(totalC)} 张封面，缺 ${fmtNum(Math.max(0, totalV - totalC))}`;
+    $('#st-nfos').textContent = `${pct(totalN, totalV)}%`;
+    $('#st-nfos-sub').textContent = `${fmtNum(totalN)} 个 NFO，缺 ${fmtNum(Math.max(0, totalV - totalN))}`;
+
+    if (!rules.length) {
+        $('#rules').innerHTML = '<div class="empty">还没有对账任务，点击「新建任务」添加一个 115 目录。</div>';
+        return;
+    }
+    const syncing = !!(state.status && state.status.sync_progress && state.status.sync_progress.is_syncing);
+    $('#rules').innerHTML = rules.map(r => {
+        const failed = String(r.last_status || '').startsWith('失败');
+        return `
+        <div class="card rule">
+            <div class="rule-head">
+                <div style="flex:1;min-width:0">
+                    <div class="rule-title">${esc(r.name)} ${r.enabled === false ? '<span class="tag">已停用</span>' : ''}</div>
+                    <div class="rule-meta">CID ${esc(r.cid)}</div>
+                    <div class="rule-meta">${esc(r.output_dir)}/${esc(r.name)}</div>
+                </div>
+                <button class="btn btn-sm btn-ghost btn-danger" data-action="delete-rule" data-id="${esc(r.id)}" data-name="${esc(r.name)}" title="删除任务（不删除已生成的文件）">删除</button>
+            </div>
+            <div class="rule-stats">
+                <div><div class="k">视频</div><div class="v">${fmtNum(r.video_count)}</div></div>
+                <div><div class="k">封面</div><div class="v">${r.video_count ? `${r.cover_pct}%` : '—'}</div></div>
+                <div><div class="k">NFO</div><div class="v">${r.video_count ? `${r.nfo_pct}%` : '—'}</div></div>
+            </div>
+            <div class="rule-foot">
+                <span class="status ${failed ? 'log-err' : ''}" title="${esc(r.last_status)}">上次对账 ${esc(r.last_sync || '从未')} · ${esc(r.last_status || '就绪')}</span>
+                ${r.governable ? `<button class="btn btn-sm" data-action="nav" data-view="categories">专区治理（${fmtNum(r.sub_categories_count)}）</button>` : ''}
+                <button class="btn btn-sm" data-action="sync-rule" data-id="${esc(r.id)}" data-name="${esc(r.name)}" ${syncing ? 'disabled' : ''}>对账</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function syncRules(ruleId, name) {
+    const ok = await confirmDialog({
+        title: ruleId ? `对账任务「${name}」` : '全量对账',
+        message: (ruleId ? '从 115 导出该目录的目录树，' : '对所有启用的任务依次从 115 导出目录树，')
+            + '新增缺失的 STRM 并清理云端已删除的 STRM。\nNFO 与封面不会被修改。',
+        okText: '开始对账',
+    });
+    if (!ok) return;
+    try {
+        const res = await api('/api/sync', { method: 'POST', query: ruleId ? { rule_id: ruleId } : undefined });
+        toast(res.message, res.status === 'busy' ? 'warn' : 'ok');
+        pollStatus();
+    } catch (e) { toast(`启动失败：${e.message}`, 'error'); }
+}
+
+async function deleteRule(id, name) {
+    const ok = await confirmDialog({
+        title: `删除任务「${name}」？`,
+        message: '只删除任务配置，已生成的 STRM、NFO 与封面文件保持不变。',
+        okText: '删除', danger: true,
+    });
+    if (!ok) return;
+    try {
+        await api(`/api/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        toast(`已删除任务「${name}」`, 'ok');
+        loadRules();
+    } catch (e) { toast(`删除失败：${e.message}`, 'error'); }
+}
+
+function openRuleDialog() {
+    $('#rule-form').reset();
+    $('#rule-error').textContent = '';
+    $('#dlg-rule').showModal();
+    $('#r-name').focus();
+}
+
+async function submitRule(e) {
+    e.preventDefault();
+    const payload = {
+        name: $('#r-name').value.trim(),
+        cid: $('#r-cid').value.trim(),
+        output_dir: $('#r-output').value.trim(),
+        prefix: $('#r-prefix').value.trim(),
+    };
+    if (!payload.name || !payload.cid) { $('#rule-error').textContent = '任务名称和目录 CID 都必须填写'; return; }
+    if (!/^\d+$/.test(payload.cid)) { $('#rule-error').textContent = 'CID 应为纯数字'; return; }
+    await withBusy($('#rule-submit'), async () => {
+        try {
+            await api('/api/rules/add', { method: 'POST', body: payload });
+            $('#dlg-rule').close();
+            toast(`已创建任务「${payload.name}」，可点击「对账」生成 STRM`, 'ok');
+            loadRules();
+        } catch (err) { $('#rule-error').textContent = err.message; }
+    });
+}
+
+// =====================================================================
+// 专区治理
+// =====================================================================
+async function loadCategories(refresh = false) {
+    try {
+        state.categories = await api('/api/categories', { query: refresh ? { refresh: 'true' } : undefined });
+        // 清理已不存在或已不可选的勾选项
+        const selectable = new Set(state.categories.filter(isSelectable).map(c => c.name));
+        state.selected.forEach(n => { if (!selectable.has(n)) state.selected.delete(n); });
+        renderCategories();
+    } catch (e) {
+        $('#cat-body').innerHTML = `<tr><td colspan="7" class="empty">加载失败：${esc(e.message)}</td></tr>`;
+    }
+}
+
+const isActive = c => c.status_state === 'running' || c.status_state === 'queued';
+const isTodo = c => !c.is_scraped && (c.cover_count < c.video_count || c.nfo_count < c.video_count);
+const isSelectable = c => !c.is_scraped && !isActive(c);
+const FILTERS = { all: () => true, todo: isTodo, active: isActive, locked: c => c.is_scraped };
+
+function visibleCategories() {
+    const q = state.catSearch.toLowerCase();
+    const list = state.categories.filter(c => FILTERS[state.catFilter](c) && (!q || c.name.toLowerCase().includes(q)));
+    const rate = (c, key) => (c.video_count ? c[key] / c.video_count : 1);
+    const sorters = {
+        name: (a, b) => a.name.localeCompare(b.name, 'zh-CN'),
+        videos: (a, b) => b.video_count - a.video_count,
+        cover: (a, b) => rate(a, 'cover_count') - rate(b, 'cover_count'),
+        nfo: (a, b) => rate(a, 'nfo_count') - rate(b, 'nfo_count'),
+    };
+    return list.sort(sorters[state.catSort]);
+}
+
+function meter(count, total) {
+    const p = pct(count, total);
+    const cls = !total ? '' : p >= 100 ? 'ok' : p < 60 ? 'warn' : '';
+    return `<div class="meter"><div class="meter-track"><div class="meter-fill ${cls}" style="width:${total ? p : 0}%"></div></div><span class="meter-text">${fmtNum(count)} · ${total ? `${p}%` : '—'}</span></div>`;
+}
+
+function renderCategories() {
+    $$('#cat-filters .chip').forEach(chip => {
+        const n = state.categories.filter(FILTERS[chip.dataset.filter]).length;
+        chip.querySelector('.count').textContent = n;
+    });
+    const list = visibleCategories();
+    const body = $('#cat-body');
+    if (!state.categories.length) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">输出目录下没有专区。请先执行一次对账。</td></tr>';
+    } else if (!list.length) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">没有符合条件的专区</td></tr>';
+    } else {
+        body.innerHTML = list.map(c => {
+            const name = esc(c.name);
+            let status, actions;
+            if (c.status_state === 'running') {
+                status = '<span class="tag tag-accent"><span class="dot pulse"></span>治理中</span>';
+                actions = '';
+            } else if (c.status_state === 'queued') {
+                status = `<span class="tag tag-warn">${esc(c.type_desc || '排队中')}</span>`;
+                actions = `<button class="btn btn-sm" data-action="cat-dequeue" data-cat="${name}">取消排队</button>`;
+            } else if (c.is_scraped) {
+                status = '<span class="tag tag-ok">已加锁</span>';
+                actions = `
+                    <button class="btn btn-sm" data-action="cat-scrape" data-cat="${name}" title="从官方站点与 ThePornDB 刮削海报和 NFO">官方刮削</button>
+                    <button class="btn btn-sm" data-action="cat-lock" data-cat="${name}" title="解锁后可进行 AI 治理与抽帧">解锁</button>`;
+            } else {
+                status = isTodo(c) ? '<span class="tag">待补齐</span>' : '<span class="tag tag-ok">已完整</span>';
+                actions = `
+                    <button class="btn btn-sm btn-primary" data-action="cat-gov" data-cat="${name}" data-max="0" title="补齐全部缺失的 NFO 与封面">查漏补缺</button>
+                    <button class="btn btn-sm" data-action="cat-gov" data-cat="${name}" data-max="50" title="只处理前 50 部，用于试跑">试跑 50</button>
+                    <button class="btn btn-sm" data-action="cat-scrape" data-cat="${name}" title="从官方站点与 ThePornDB 刮削海报和 NFO">官方刮削</button>
+                    <button class="btn btn-sm" data-action="cat-lock" data-cat="${name}" title="加锁后不再参与 AI 治理与抽帧，保护已有的官方元数据">加锁</button>`;
             }
+            actions += `<button class="btn btn-sm btn-ghost btn-danger" data-action="cat-clean" data-cat="${name}" title="删除没有对应 STRM 的孤立 NFO 与图片">清理失效</button>`;
+            const selectable = isSelectable(c);
+            return `<tr>
+                <td>${selectable ? `<input type="checkbox" class="check" data-select="${name}" ${state.selected.has(c.name) ? 'checked' : ''}>` : ''}</td>
+                <td><div class="cat-name">${name}</div>${c.sub_count ? `<div class="cat-path">含 ${fmtNum(c.sub_count)} 个字幕</div>` : ''}</td>
+                <td>${status}</td>
+                <td class="num">${fmtNum(c.video_count)}</td>
+                <td>${meter(c.cover_count, c.video_count)}</td>
+                <td>${meter(c.nfo_count, c.video_count)}</td>
+                <td class="actions">${actions}</td>
+            </tr>`;
+        }).join('');
+    }
+    renderBulkbar(list);
+}
+
+function renderBulkbar(list = visibleCategories()) {
+    const n = state.selected.size;
+    $('#bulkbar').classList.toggle('hidden', n === 0);
+    $('#bulk-count').textContent = n;
+    const selectable = list.filter(isSelectable);
+    const all = $('#cat-check-all');
+    all.checked = selectable.length > 0 && selectable.every(c => state.selected.has(c.name));
+    all.indeterminate = !all.checked && selectable.some(c => state.selected.has(c.name));
+    all.disabled = selectable.length === 0;
+}
+
+async function enqueueGovernance(category, maxItems) {
+    return api('/api/categories/governance', {
+        method: 'POST',
+        query: { category, extract_covers: 'true', probe_streams: String($('#probe-streams').checked), max_items: String(maxItems) },
+    });
+}
+
+async function governCategory(category, maxItems, button) {
+    await withBusy(button, async () => {
+        try {
+            const res = await enqueueGovernance(category, maxItems);
+            toast(res.message, res.status === 'already_queued' || res.status === 'running' ? 'warn' : 'ok');
+            await Promise.all([pollStatus(), loadCategories()]);
+        } catch (e) { toast(`提交失败：${e.message}`, 'error'); }
+    });
+}
+
+async function bulkGovern(button) {
+    const names = Array.from(state.selected);
+    await withBusy(button, async () => {
+        let ok = 0;
+        for (const name of names) {
+            try { await enqueueGovernance(name, 0); ok += 1; state.selected.delete(name); }
+            catch (e) { toast(`「${name}」提交失败：${e.message}`, 'error'); }
         }
+        toast(`已将 ${ok} 个专区加入治理队列，将按顺序自动执行`, 'ok');
+        await Promise.all([pollStatus(), loadCategories()]);
+    });
+}
 
-        async function loadCategories(forceRefresh = false) {
-            const tbody = document.getElementById('categories-tbody');
-            const btn = document.getElementById('btn-refresh-categories');
-            const icon = btn ? btn.querySelector('i') : null;
-            if (icon) icon.classList.add('animate-spin');
-            try {
-                const url = forceRefresh ? '/api/categories?refresh=true' : '/api/categories';
-                const res = await fetch(url);
-                const data = await res.json();
-                if (!data || data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" class="px-6 py-8 text-center text-slate-500">暂无专区数据</td></tr>';
-                    return;
-                }
+async function scrapeCategory(category) {
+    const ok = await confirmDialog({
+        title: `官方刮削「${category}」`,
+        message: '为缺少海报或 NFO 的视频从官方站点与 ThePornDB 抓取真实元数据。\n只补齐缺失项，不覆盖已有文件；未命中的条目保持原样。',
+        okText: '开始刮削',
+    });
+    if (!ok) return;
+    try {
+        const res = await api('/api/categories/scrape_official', { method: 'POST', query: { category, max_items: '0' } });
+        toast(res.message || '已启动', res.status === 'error' ? 'error' : 'ok');
+    } catch (e) { toast(`启动失败：${e.message}`, 'error'); }
+}
 
-                tbody.innerHTML = data.map((cat, idx) => {
-                    const isProtected = cat.is_scraped;
-                    const coverRate = cat.video_count > 0 ? Math.min(100, Math.round(cat.cover_count / cat.video_count * 100)) : 0;
-                    const nfoRate = cat.video_count > 0 ? Math.min(100, Math.round(cat.nfo_count / cat.video_count * 100)) : 0;
-
-                    let statusBadge = '';
-                    if (cat.status_state === 'running') {
-                        statusBadge = `
-                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-500/20 text-indigo-400 border border-indigo-500/40 animate-pulse-fast">
-                                <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 mr-1.5 animate-ping"></span>
-                                <span>正在查漏补缺中...</span>
-                            </span>
-                        `;
-                    } else if (cat.status_state === 'queued') {
-                        statusBadge = `
-                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
-                                <i class="bi bi-hourglass-split mr-1 text-amber-400"></i>
-                                <span>${esc(cat.type_desc)}</span>
-                            </span>
-                        `;
-                    } else {
-                        statusBadge = `
-                            <button onclick="toggleLock(${jsArg(cat.name)})" title="点击切换加锁/解锁状态" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition ${isProtected ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'}">
-                                <i class="bi ${isProtected ? 'bi-lock-fill text-emerald-400 mr-1.5' : 'bi-unlock-fill text-slate-400 mr-1.5'}"></i>
-                                <span>${isProtected ? '已加锁保护 (点击解锁)' : '原生待治理 (点击加锁)'}</span>
-                            </button>
-                        `;
-                    }
-
-                    let actionButtons = '';
-                    if (isProtected) {
-                        actionButtons = `
-                            <span class="text-xs text-slate-500 mr-1"><i class="bi bi-shield-shaded me-1"></i>锁定</span>
-                            <button onclick="triggerOfficialScrape(${jsArg(cat.name)})" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
-                                <i class="bi bi-stars me-1 text-cyan-400"></i>官方刮削
-                            </button>
-                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
-                                <i class="bi bi-trash3 me-1"></i>清失效
-                            </button>
-                            <button onclick="toggleLock(${jsArg(cat.name)})" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition">
-                                一键解锁
-                            </button>
-                        `;
-                    } else if (cat.status_state === 'running') {
-                        actionButtons = `
-                            <span class="text-xs font-semibold text-indigo-400 mr-2 flex items-center inline-flex">
-                                <i class="bi bi-arrow-repeat animate-spin mr-1"></i>正在执行
-                            </span>
-                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition">
-                                清失效
-                            </button>
-                        `;
-                    } else if (cat.status_state === 'queued') {
-                        actionButtons = `
-                            <span class="text-xs font-medium text-amber-400 mr-2">
-                                <i class="bi bi-clock-history mr-1"></i>排队等待中
-                            </span>
-                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition">
-                                清失效
-                            </button>
-                        `;
-                    } else {
-                        actionButtons = `
-                            <button onclick="triggerOfficialScrape(${jsArg(cat.name)})" class="px-2.5 py-1 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 text-xs font-medium border border-cyan-500/30 transition" title="调用 Amane/ThePornDB 官方原画海报与元数据刮削">
-                                <i class="bi bi-stars me-1 text-cyan-400"></i>官方刮削
-                            </button>
-                            <button onclick="cleanOrphanMetadata(${jsArg(cat.name)})" class="px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-rose-900/30 text-rose-300 text-xs font-medium border border-rose-800/40 transition" title="清理该文件夹内无对应 STRM 的失效孤立元数据">
-                                <i class="bi bi-trash3 me-1"></i>清失效
-                            </button>
-                            <button onclick="runCategoryGov(${jsArg(cat.name)}, 50)" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition" title="处理前 50 部作为小样本测试">
-                                试跑50部
-                            </button>
-                            <button onclick="runCategoryGov(${jsArg(cat.name)}, 0, ${cat.video_count})" class="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition" title="加入治理队列 (自动顺延执行)">
-                                全量查漏补缺
-                            </button>
-                        `;
-                    }
-
-                    return `
-                        <tr class="hover:bg-slate-800/30 transition-colors">
-                            <td class="px-6 py-4">
-                                <div class="flex items-center space-x-3">
-                                    <div class="w-8 h-8 rounded-lg ${isProtected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-indigo-500/10 text-indigo-400'} flex items-center justify-center font-medium">
-                                        <i class="bi ${isProtected ? 'bi-shield-check' : 'bi-folder2'}"></i>
-                                    </div>
-                                    <div>
-                                        <div class="font-semibold text-white">${esc(cat.name)}</div>
-                                        <div class="text-xs text-slate-400 font-mono">/成人/${esc(cat.name)}</div>
-                                    </div>
-                                </div>
-                            </td>
-                            <td class="px-6 py-4">
-                                ${statusBadge}
-                            </td>
-                            <td class="px-6 py-4 font-mono font-medium text-slate-200">
-                                ${cat.video_count.toLocaleString()} <span class="text-xs text-slate-400">部</span>
-                                ${cat.sub_count > 0 ? `<span class="inline-flex items-center ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-500/10 text-indigo-300 border border-indigo-500/20" title="包含 ${cat.sub_count} 个外挂字幕 STRM">+${cat.sub_count} 字幕</span>` : ''}
-                            </td>
-                            <td class="px-6 py-4">
-                                <div class="flex items-center space-x-2">
-                                    <div class="w-20 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                        <div id="cat-cover-bar-${encodeURIComponent(cat.name)}" class="bg-indigo-500 h-full rounded-full" style="width: ${coverRate}%"></div>
-                                    </div>
-                                    <span id="cat-cover-txt-${encodeURIComponent(cat.name)}" class="text-xs font-mono text-slate-400">${cat.cover_count} (${coverRate}%)</span>
-                                </div>
-                            </td>
-                            <td class="px-6 py-4">
-                                <div class="flex items-center space-x-2">
-                                    <div class="w-20 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                        <div id="cat-nfo-bar-${encodeURIComponent(cat.name)}" class="bg-cyan-500 h-full rounded-full" style="width: ${nfoRate}%"></div>
-                                    </div>
-                                    <span id="cat-nfo-txt-${encodeURIComponent(cat.name)}" class="text-xs font-mono text-slate-400">${cat.nfo_count} (${nfoRate}%)</span>
-                                </div>
-                            </td>
-                            <td class="px-6 py-4 text-right">
-                                <div class="inline-flex items-center space-x-1.5">
-                                    ${actionButtons}
-                                </div>
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
-            } catch (e) {
-                console.error(e);
-            } finally {
-                if (icon) icon.classList.remove('animate-spin');
-            }
-        }
-
-        async function triggerOfficialScrape(catName) {
-            if (!confirm(`确定为专区【${catName}】启动全量官方原画海报与元数据刮削吗？`)) return;
-            try {
-                const res = await fetch(`/api/categories/scrape_official?category=${encodeURIComponent(catName)}&max_items=0`, {method: 'POST'});
-                const data = await res.json();
-                alert(data.message || '已启动官方全量刮削！');
-                switchTab('dashboard');
-                pollStatus();
-            } catch (e) {
-                alert('启动刮削失败: ' + e);
-            }
-        }
-
-        async function toggleLock(catName) {
-            try {
-                const res = await fetch(`/api/categories/toggle_lock?category=${encodeURIComponent(catName)}`, {method: 'POST'});
-                if (res.ok) {
-                    loadCategories();
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        }
-
-        async function cleanOrphanMetadata(catName) {
-            if (!confirm(`确定清理专区【${catName}】下失效的孤立元数据（无对应 STRM 的 NFO 和图片）吗？`)) return;
-            try {
-                const res = await fetch(`/api/categories/clean_orphan?category=${encodeURIComponent(catName)}`, {method: 'POST'});
-                const data = await res.json();
-                alert(data.result?.message || '清理完成！');
-                loadCategories();
-            } catch (e) {
-                alert('清理失败: ' + e);
-            }
-        }
-
-        async function runCategoryGov(categoryName, maxItems, totalCount) {
-            const probeStreams = document.getElementById('chk-probe-streams')?.checked || false;
-            const res = await fetch(`/api/categories/governance?category=${encodeURIComponent(categoryName)}&extract_covers=true&probe_streams=${probeStreams}&max_items=${maxItems}`, {
-                method: 'POST'
-            });
-            const data = await res.json();
-            alert(data.message || '操作成功！');
+async function cleanCategory(category, button) {
+    const ok = await confirmDialog({
+        title: `清理「${category}」的失效元数据？`,
+        message: '将删除没有对应 STRM 的孤立 NFO、海报与缩略图。此操作不可撤销。',
+        okText: '清理', danger: true,
+    });
+    if (!ok) return;
+    await withBusy(button, async () => {
+        try {
+            const res = await api('/api/categories/clean_orphan', { method: 'POST', query: { category } });
+            const r = res.result || {};
+            toast(r.total ? `已删除 ${r.total} 个孤立文件（NFO ${r.deleted_nfo}，海报 ${r.deleted_posters}，缩略图 ${r.deleted_thumbs}）` : '没有需要清理的孤立文件', 'ok', 6000);
             loadCategories();
-            pollStatus();
+        } catch (e) { toast(`清理失败：${e.message}`, 'error'); }
+    });
+}
+
+async function toggleLock(category, button) {
+    await withBusy(button, async () => {
+        try {
+            const res = await api('/api/categories/toggle_lock', { method: 'POST', query: { category } });
+            toast(res.is_scraped ? `已加锁「${category}」` : `已解锁「${category}」`, 'ok');
+            state.selected.delete(category);
+            loadCategories();
+        } catch (e) { toast(`操作失败：${e.message}`, 'error'); }
+    });
+}
+
+async function dequeue(category, button) {
+    await withBusy(button, async () => {
+        try {
+            const res = await api(`/api/categories/governance/queue/${encodeURIComponent(category)}`, { method: 'DELETE' });
+            toast(res.message, res.status === 'success' ? 'ok' : 'warn');
+            await Promise.all([pollStatus(), loadCategories()]);
+        } catch (e) { toast(`操作失败：${e.message}`, 'error'); }
+    });
+}
+
+// =====================================================================
+// 运行日志
+// =====================================================================
+function logClass(line) {
+    if (/❌|🚨|🛑|失败|错误/.test(line)) return 'log-err';
+    if (/⚠️|⏭️/.test(line)) return 'log-warn';
+    if (/✅|🎉/.test(line)) return 'log-ok';
+    if (/🤖|🧠/.test(line)) return 'log-ai';
+    if (/📸/.test(line)) return 'log-img';
+    return '';
+}
+
+function renderLogs(force = false) {
+    const logs = (state.status && state.status.live_logs) || [];
+    const sig = `${state.logFilter}|${logs.length}|${logs[logs.length - 1] || ''}`;
+    if (!force && sig === state.logSig) return;
+    state.logSig = sig;
+    const box = $('#logbox');
+    // 仅当用户停留在底部时自动跟随，向上翻看时不打断
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const shown = state.logFilter === 'problem' ? logs.filter(l => /log-(err|warn)/.test(logClass(l))) : logs;
+    box.innerHTML = shown.length
+        ? shown.map(l => `<p class="${logClass(l)}">${esc(l)}</p>`).join('')
+        : '<p class="faint">暂无日志</p>';
+    $('#log-meta').textContent = `显示最近 ${shown.length} 条`;
+    if (atBottom || force) box.scrollTop = box.scrollHeight;
+}
+
+// =====================================================================
+// 系统设置
+// =====================================================================
+const SETTINGS_FIELDS = {
+    's-cookie': c => c.cookie,
+    's-prefix': c => c.default_prefix,
+    's-cd2': c => c.cd2_mount_path,
+    's-output': c => c.default_output,
+    's-layer': c => c.layer_limit ?? 25,
+    's-subs': c => c.sync_subtitles !== false,
+    's-cleanup': c => c.auto_cleanup_orphan !== false,
+    's-autosync': c => !!c.auto_sync_enabled,
+    's-interval': c => c.auto_sync_interval_mins ?? 30,
+    's-ai-enabled': c => (c.ai_governance || {}).enabled !== false,
+    's-ai-base': c => (c.ai_governance || {}).api_base,
+    's-ai-model': c => (c.ai_governance || {}).model,
+    's-ai-key': c => (c.ai_governance || {}).api_key,
+    's-ai-batch': c => (c.ai_governance || {}).batch_size ?? 50,
+    's-tpdb-base': c => c.tpdb_base,
+    's-tpdb-token': c => c.tpdb_token,
+    's-tg-token': c => c.telegram_bot_token,
+    's-tg-chat': c => c.telegram_chat_id,
+};
+
+function setDirty(dirty) {
+    state.settingsDirty = dirty;
+    $('#savebar').classList.toggle('hidden', !dirty);
+}
+
+async function loadSettings() {
+    try {
+        state.config = await api('/api/config');
+        fillSettings(state.config);
+    } catch (e) { toast(`读取配置失败：${e.message}`, 'error'); }
+}
+
+function fillSettings(cfg) {
+    Object.entries(SETTINGS_FIELDS).forEach(([id, get]) => {
+        const el = document.getElementById(id);
+        const value = get(cfg);
+        if (el.type === 'checkbox') el.checked = !!value;
+        else el.value = value ?? '';
+    });
+    $('#s-interval').disabled = !$('#s-autosync').checked;
+    setDirty(false);
+}
+
+function intValue(id, fallback, min) {
+    const n = parseInt(document.getElementById(id).value, 10);
+    return Number.isFinite(n) ? Math.max(min, n) : fallback;
+}
+
+async function saveSettings(button) {
+    const cfg = state.config || {};
+    const ai = cfg.ai_governance || {};
+    const payload = {
+        cookie: $('#s-cookie').value.trim(),
+        default_prefix: $('#s-prefix').value.trim(),
+        cd2_mount_path: $('#s-cd2').value.trim(),
+        default_output: $('#s-output').value.trim(),
+        layer_limit: intValue('s-layer', 25, 1),
+        sync_subtitles: $('#s-subs').checked,
+        auto_cleanup_orphan: $('#s-cleanup').checked,
+        cover_threads: cfg.cover_threads || 1,
+        auto_sync_enabled: $('#s-autosync').checked,
+        auto_sync_interval_mins: intValue('s-interval', 30, 5),
+        ai_governance: {
+            enabled: $('#s-ai-enabled').checked,
+            api_base: $('#s-ai-base').value.trim() || ai.api_base || 'https://openrouter.ai/api/v1',
+            model: $('#s-ai-model').value.trim() || ai.model || 'minimax/minimax-m2.7:free',
+            api_key: $('#s-ai-key').value.trim(),
+            batch_size: intValue('s-ai-batch', 50, 1),
+        },
+        tpdb_base: $('#s-tpdb-base').value.trim(),
+        tpdb_token: $('#s-tpdb-token').value.trim(),
+        telegram_bot_token: $('#s-tg-token').value.trim(),
+        telegram_chat_id: $('#s-tg-chat').value.trim(),
+    };
+    if (!payload.default_prefix || !payload.default_output) {
+        toast('播放地址前缀和 STRM 输出目录不能为空', 'error');
+        return;
+    }
+    await withBusy(button, async () => {
+        try {
+            const res = await api('/api/config', { method: 'POST', body: payload });
+            state.config = res.config;
+            fillSettings(res.config);
+            toast('设置已保存', 'ok');
+        } catch (e) { toast(`保存失败：${e.message}`, 'error'); }
+    });
+}
+
+// =====================================================================
+// 事件绑定
+// =====================================================================
+document.addEventListener('click', e => {
+    const el = e.target.closest('[data-action]');
+    if (!el || el.disabled) return;
+    const { action } = el.dataset;
+    const cat = el.dataset.cat;
+    switch (action) {
+        case 'nav': switchView(el.dataset.view); break;
+        case 'sync-all': syncRules(null); break;
+        case 'sync-rule': syncRules(el.dataset.id, el.dataset.name); break;
+        case 'delete-rule': deleteRule(el.dataset.id, el.dataset.name); break;
+        case 'add-rule': openRuleDialog(); break;
+        case 'rescan': withBusy(el, () => loadCategories(true)).then(() => toast('已重新盘点本地文件', 'ok')); break;
+        case 'cat-gov': governCategory(cat, Number(el.dataset.max), el); break;
+        case 'cat-scrape': scrapeCategory(cat); break;
+        case 'cat-clean': cleanCategory(cat, el); break;
+        case 'cat-lock': toggleLock(cat, el); break;
+        case 'cat-dequeue': dequeue(cat, el); break;
+        case 'bulk-gov': bulkGovern(el); break;
+        case 'bulk-clear': state.selected.clear(); renderCategories(); break;
+        case 'log-bottom': renderLogs(true); break;
+        case 'settings-save': saveSettings(el); break;
+        case 'settings-reset': if (state.config) fillSettings(state.config); break;
+        case 'reveal': {
+            const input = document.getElementById(el.dataset.target);
+            input.type = input.type === 'password' ? 'text' : 'password';
+            el.textContent = input.type === 'password' ? '显示' : '隐藏';
+            break;
         }
+        case 'relogin':
+            localStorage.removeItem(TOKEN_KEY);
+            requestLogin('').then(() => { pollStatus(); switchView(state.view); });
+            break;
+    }
+});
 
-        function updateSpeedUI(currentDelay) {
-            const speedMap = {
-                1.0: '10',
-                1.5: '15',
-                2.0: '20',
-                3.0: '30'
-            };
-            ['10', '15', '20', '30'].forEach(k => {
-                const el = document.getElementById(`btn-speed-${k}`);
-                if (el) el.className = "px-2 py-0.5 rounded bg-slate-800 hover:bg-indigo-600 text-slate-200 transition font-mono";
-            });
-            const activeKey = speedMap[currentDelay] || '20';
-            const activeEl = document.getElementById(`btn-speed-${activeKey}`);
-            if (activeEl) {
-                activeEl.className = "px-2.5 py-0.5 rounded bg-indigo-600 text-white font-mono font-bold transition shadow-md shadow-indigo-600/30";
-            }
-        }
+$$('[data-close]').forEach(btn => btn.addEventListener('click', () => document.getElementById(btn.dataset.close).close()));
+$('#rule-form').addEventListener('submit', submitRule);
 
-        async function setSpeed(delayVal) {
-            try {
-                const res = await fetch(`/api/speed?delay=${delayVal}`, {method: 'POST'});
-                if (res.ok) {
-                    updateSpeedUI(delayVal);
-                    pollStatus();
-                }
-            } catch (e) {
-                console.error(e);
-            }
-        }
+$('#speed-select').addEventListener('change', async e => {
+    const delay = e.target.value;
+    try {
+        const res = await api('/api/speed', { method: 'POST', query: { delay } });
+        toast(`流控间隔已设为 ${Number(res.delay).toFixed(1)} 秒`, 'ok');
+        pollStatus();
+    } catch (err) { toast(`设置失败：${err.message}`, 'error'); }
+});
 
-        async function saveGlobalConfig() {
-            const payload = {
-                cookie: document.getElementById('cfg-cookie').value.trim(),
-                tpdb_token: (document.getElementById('cfg-tpdb-token') ? document.getElementById('cfg-tpdb-token').value.trim() : ''),
-                default_output: document.getElementById('cfg-default-output').value.trim(),
-                default_prefix: document.getElementById('cfg-default-prefix').value.trim(),
-                cd2_mount_path: document.getElementById('cfg-cd2-mount').value.trim(),
-                cover_threads: parseInt(document.getElementById('cfg-cover-threads').value) || 3,
-                layer_limit: 25,
-                sync_subtitles: true,
-                auto_cleanup_orphan: true,
-                protected_categories: globalConfig.protected_categories || [],
-                ai_governance: {
-                    enabled: true,
-                    api_base: document.getElementById('cfg-ai-base').value.trim(),
-                    api_key: document.getElementById('cfg-ai-key').value.trim(),
-                    model: document.getElementById('cfg-ai-model').value.trim(),
-                    batch_size: 100
-                },
-                auto_sync_enabled: false,
-                auto_sync_interval_mins: 30,
-                rules: globalConfig.rules || []
-            };
+$('#cat-search').addEventListener('input', e => { state.catSearch = e.target.value.trim(); renderCategories(); });
+$('#cat-sort').addEventListener('change', e => { state.catSort = e.target.value; renderCategories(); });
+$('#cat-filters').addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.catFilter = chip.dataset.filter;
+    $$('#cat-filters .chip').forEach(c => c.classList.toggle('active', c === chip));
+    renderCategories();
+});
+$('#cat-body').addEventListener('change', e => {
+    const name = e.target.dataset.select;
+    if (name === undefined) return;
+    if (e.target.checked) state.selected.add(name); else state.selected.delete(name);
+    renderBulkbar();
+});
+$('#cat-check-all').addEventListener('change', e => {
+    visibleCategories().filter(isSelectable).forEach(c => {
+        if (e.target.checked) state.selected.add(c.name); else state.selected.delete(c.name);
+    });
+    renderCategories();
+});
 
-            const res = await fetch('/api/config', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload)
-            });
-            if (res.ok) {
-                alert('✅ 配置保存成功！');
-                loadAll();
-            }
-        }
+$('#log-filters').addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.logFilter = chip.dataset.logFilter;
+    $$('#log-filters .chip').forEach(c => c.classList.toggle('active', c === chip));
+    renderLogs(true);
+});
 
-        async function triggerSync() {
-            if (!confirm('确定执行全量 STRM 目录树对账吗？(纯同步与清理 STRM 播放索引，绝不触碰任何元数据海报)')) return;
-            await fetch('/api/sync', {method: 'POST'});
-            switchTab('dashboard');
-            pollStatus();
-        }
+$('#settings-form').addEventListener('input', () => setDirty(true));
+$('#s-autosync').addEventListener('change', e => { $('#s-interval').disabled = !e.target.checked; });
+window.addEventListener('beforeunload', e => {
+    if (state.settingsDirty) { e.preventDefault(); e.returnValue = ''; }
+});
 
-        async function pollStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                const sp = data.sync_progress || {};
-                const gp = data.gov_progress || {};
-                const qLen = (data.governance_queue || []).length;
-
-                if (data.current_delay) {
-                    updateSpeedUI(data.current_delay);
-                }
-
-                document.getElementById('stat-queue-count').innerHTML = `${qLen} <span class="text-xs text-slate-400 font-normal">个专区等待中</span>`;
-
-                const isSyncing = !!sp.is_syncing;
-                const isGovRunning = !!gp.is_running;
-
-                const statusBadge = document.getElementById('sync-status-badge');
-                const statusDot = document.getElementById('status-dot');
-                const statusPing = document.getElementById('status-ping');
-                const pContainer = document.getElementById('progress-container');
-                const pBar = document.getElementById('progress-bar');
-                const pText = document.getElementById('progress-text');
-                const pPercent = document.getElementById('progress-percent');
-
-                if (isSyncing) {
-                    statusBadge.innerText = '全量对账中...';
-                    statusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-amber-500';
-                    statusPing.classList.remove('hidden');
-                    pContainer.classList.remove('hidden');
-
-                    const total = sp.total || 0;
-                    const proc = sp.processed || 0;
-                    const pct = total > 0 ? Math.round(proc / total * 100) : 0;
-                    pBar.style.width = pct + '%';
-                    pPercent.innerText = pct + '%';
-                    pText.innerText = `正在全量同步 STRM (${proc}/${total})`;
-                } else if (isGovRunning) {
-                    const qTip = qLen > 0 ? ` (排队中: ${qLen})` : '';
-                    statusBadge.innerText = `正在治理: ${gp.category}${qTip}`;
-                    statusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-indigo-500';
-                    statusPing.classList.remove('hidden');
-                    pContainer.classList.remove('hidden');
-
-                    const total = gp.total_videos || 0;
-                    const proc = gp.processed_videos || 0;
-                    const pct = total > 0 ? Math.round(proc / total * 100) : 0;
-                    pBar.style.width = pct + '%';
-                    pPercent.innerText = pct + '%';
-                    pText.innerText = `专区【${gp.category}】治理中 (已处理: ${proc}/${total} | 封面+${gp.covers_extracted} | NFO+${gp.nfos_generated})${qTip}`;
-
-                    // 实时同步专区表格中当前治理行的动态计数
-                    if (gp.category) {
-                        const nfoTxt = document.getElementById(`cat-nfo-txt-${encodeURIComponent(gp.category)}`);
-                        const nfoBar = document.getElementById(`cat-nfo-bar-${encodeURIComponent(gp.category)}`);
-                        if (nfoTxt && total > 0) {
-                            const curNfos = gp.nfos_generated || proc;
-                            const curPct = Math.min(100, Math.round(curNfos / total * 100));
-                            nfoTxt.innerText = `${curNfos} (${curPct}%)`;
-                            if (nfoBar) nfoBar.style.width = `${curPct}%`;
-                        }
-                    }
-                } else {
-                    statusBadge.innerText = '系统就绪';
-                    statusDot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
-                    statusPing.classList.add('hidden');
-                    pContainer.classList.add('hidden');
-                }
-
-                const term = document.getElementById('terminal-logs');
-                const logs = data.live_logs || [];
-                term.innerHTML = logs.map(l => {
-                    let color = 'text-slate-300';
-                    if (l.includes('✅') || l.includes('🎉') || l.includes('成功')) color = 'text-emerald-400 font-semibold';
-                    else if (l.includes('❌') || l.includes('失败') || l.includes('错误') || l.includes('🚨')) color = 'text-rose-400 font-semibold';
-                    else if (l.includes('⚠️')) color = 'text-amber-400';
-                    else if (l.includes('🤖') || l.includes('AI')) color = 'text-violet-400 font-semibold';
-                    else if (l.includes('📸')) color = 'text-cyan-400';
-                    else if (l.includes('📥')) color = 'text-amber-300 font-semibold';
-                    return `<p class="mb-1 ${color}">${esc(l)}</p>`;
-                }).join('');
-                term.scrollTop = term.scrollHeight;
-            } catch (e) {
-                console.error(e);
-            }
-        }
-
-        async function loadAll() {
-            try {
-                const res = await fetch('/api/config');
-                globalConfig = await res.json();
-                
-                document.getElementById('cfg-cookie').value = globalConfig.cookie || '';
-                document.getElementById('cfg-default-output').value = globalConfig.default_output || '/Movies/TreeStrms';
-                document.getElementById('cfg-default-prefix').value = globalConfig.default_prefix || 'http://23.19.231.70:5244/d/115';
-                document.getElementById('cfg-cd2-mount').value = globalConfig.cd2_mount_path || '/Movies/CloudDrive/115';
-                document.getElementById('cfg-cover-threads').value = globalConfig.cover_threads || 3;
-                
-                const aiCfg = globalConfig.ai_governance || {};
-                document.getElementById('cfg-ai-base').value = aiCfg.api_base || 'https://openrouter.ai/api/v1';
-                document.getElementById('cfg-ai-key').value = aiCfg.api_key || '';
-                document.getElementById('cfg-ai-model').value = aiCfg.model || 'minimax/minimax-m2.7:free';
-                if (document.getElementById('cfg-tpdb-token')) document.getElementById('cfg-tpdb-token').value = globalConfig.tpdb_token || 'GYJTmJLvxL1XKiQ3XSJhImg9fWb3C6yVztbNyp8pf1cd2f25';
-                
-                loadRulesList();
-            } catch (e) {
-                console.error(e);
-            }
-        }
-
-        loadAll();
-        setInterval(pollStatus, 2500);
-    </script>
+// =====================================================================
+// 启动
+// =====================================================================
+const initialView = (location.hash || '').slice(1);
+switchView(VIEW_TITLES[initialView] ? initialView : 'overview');
+pollStatus();
+setInterval(() => { if (!document.hidden) pollStatus(); }, 2500);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollStatus(); });
+</script>
 </body>
 </html>

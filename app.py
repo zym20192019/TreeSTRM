@@ -1,7 +1,6 @@
 import scraper_service
 import os, sys, re, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex, secrets, hmac
 from urllib.parse import unquote
-from xml.sax.saxutils import escape as xml_escape
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -9,11 +8,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from core.config import (
     BASE_DIR, CONFIG_FILE, DATA_DIR, LOGS_FILE, SPEED_FILE,
     DEFAULT_PROTECTED_CATEGORIES, COMPREHENSIVE_SUBTITLE_EXTS,
-    ConfigModel, load_config, save_config,
+    DEFAULT_STREAM_PREFIX, DEFAULT_CD2_MOUNT_PATH, DEFAULT_OUTPUT_DIR, DEFAULT_ADULT_CID, DEFAULT_MOVIES_CID,
+    ConfigModel, load_config, save_config, modify_config,
 )
 from core.events import push_log, live_log_messages, send_telegram_alert, get_dynamic_delay, MIN_SAFE_DELAY, LOG_DIR
 from services.cloud115 import create_115_session, export_115_tree
 from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
+from engine.nfo_builder import write_nfo_file
 
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
 
@@ -341,46 +342,6 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
             push_log(f"❌ AI 翻译兜底失败，相关 NFO 保持缺失: {folder_hint} ({len(batch)}个): {str(exc)[:180]}")
     return result
 
-def _xml_text(value: Any) -> str:
-    """AI 返回内容可能含 & < >，不转义会生成 Emby 无法解析的坏 NFO"""
-    return xml_escape(str(value or ""))
-
-def _cdata_text(value: Any) -> str:
-    # CDATA 内唯一非法序列是 ]]>，拆成两个相邻 CDATA 段
-    return str(value or "").replace("]]>", "]]]]><![CDATA[>")
-
-def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: int = 0, width: int = 1920, height: int = 1080):
-    tags_xml = "\n".join([f"  <tag>{_xml_text(t)}</tag>" for t in meta.get("tags", [])])
-    genres_xml = "\n".join([f"  <genre>{_xml_text(g)}</genre>" for g in meta.get("genres", [])])
-    studio = _xml_text(meta.get("studio", ""))
-    title = _cdata_text(meta.get("title", ""))
-    summary = _cdata_text(meta.get("summary", ""))
-    
-    filesize_tag = f"  <filesize>{filesize}</filesize>\n" if filesize > 0 else ""
-    runtime_tag = f"  <runtime>{runtime_mins}</runtime>\n" if runtime_mins > 0 else ""
-    
-    content = f"""<?xml version="1.0" encoding="UTF-8" ?>
-<movie>
-  <title><![CDATA[{title}]]></title>
-  <originaltitle><![CDATA[{title}]]></originaltitle>
-  <sorttitle><![CDATA[{title}]]></sorttitle>
-  <studio>{studio}</studio>
-  <plot><![CDATA[{summary}]]></plot>
-  <outline><![CDATA[{summary}]]></outline>
-{genres_xml}
-{tags_xml}
-{runtime_tag}{filesize_tag}  <fileinfo>
-    <streamdetails>
-      <video>
-        <width>{width}</width>
-        <height>{height}</height>
-      </video>
-    </streamdetails>
-  </fileinfo>
-</movie>"""
-    with open(nfo_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
 # ----------------- CD2 本地通道 Fast Seek 抽帧核心 (0 验证码、0 拦截、0.9s 秒级出图) -----------------
 
 from engine.cd2_extractor import extract_cover_by_cd2, probe_media_info, update_nfo_with_streamdetails, map_to_cd2_path
@@ -411,71 +372,6 @@ def is_subtitle_strm(strm_path: str, filename: str) -> bool:
     m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
     return bool(m and ('.' + m.group(1).lower()) in COMPREHENSIVE_SUBTITLE_EXTS)
 
-
-# ----------------- 二级页面：父子直属结构 100% 精准 CID 映射引擎 -----------------
-
-category_sub_cids_cache: Dict[str, Dict[str, str]] = {}
-
-def get_category_cid_map(session: requests.Session, category_name: str) -> Dict[str, str]:
-    if category_name in category_sub_cids_cache:
-        return category_sub_cids_cache[category_name]
-        
-    cid_map = {}
-    try:
-        adult_cid = "3291659674416491425"
-        res = session.get(f'https://webapi.115.com/files?aid=1&cid={adult_cid}&show_dir=1&limit=100', timeout=12).json()
-        cat_cid = None
-        for d in res.get('data', []):
-            if d.get('n') == category_name:
-                cat_cid = d.get('cid')
-                break
-                
-        if cat_cid:
-            sub_res = session.get(f'https://webapi.115.com/files?aid=1&cid={cat_cid}&show_dir=1&limit=200', timeout=12).json()
-            for sd in sub_res.get('data', []):
-                s_name = sd.get('n')
-                s_cid = sd.get('cid')
-                if s_name and s_cid:
-                    cid_map[s_name] = s_cid
-            category_sub_cids_cache[category_name] = cid_map
-            push_log(f"⚡ [直属目录树对齐] 成功锁定【{category_name}】直属 {len(cid_map)} 个子专区真实 CID 索引表！")
-    except Exception as e:
-        push_log(f"⚠️ 拉取直属子目录树异常: {str(e)[:50]}")
-    return cid_map
-
-def fetch_folder_pickcodes(session: requests.Session, category_name: str, parent_path: str) -> Dict[str, dict]:
-    folder_name = os.path.basename(parent_path)
-    res_map = {}
-    try:
-        cid_map = get_category_cid_map(session, category_name)
-        target_cid = cid_map.get(folder_name)
-        
-        if not target_cid:
-            s_res = session.get(f'https://webapi.115.com/files/search?search_value={urllib.parse.quote(folder_name)}&limit=5', timeout=10).json()
-            raw_data = s_res.get('data')
-            if isinstance(raw_data, list) and len(raw_data) > 0:
-                for d in raw_data:
-                    if isinstance(d, dict) and d.get('n') == folder_name and d.get('cid'):
-                        target_cid = d.get('cid')
-                        break
-                if not target_cid and isinstance(raw_data[0], dict):
-                    target_cid = raw_data[0].get('cid')
-                    
-        if target_cid:
-            files_res = session.get(f'https://webapi.115.com/files?aid=1&cid={target_cid}&show_dir=0&limit=1150', timeout=12).json()
-            raw_files = files_res.get('data')
-            if isinstance(raw_files, list):
-                for f in raw_files:
-                    if isinstance(f, dict) and f.get('n') and f.get('pc'):
-                        res_map[f.get('n')] = {
-                            'pc': f.get('pc'),
-                            'size': int(f.get('s') or 0),
-                            'play_long': int(f.get('play_long') or 0),
-                            'vdi': f.get('vdi')
-                        }
-    except Exception as e:
-        push_log(f"⚠️ 获取目录【{folder_name}】内部映射异常: {str(e)[:50]}")
-    return res_map
 
 # ----------------- 自动队列调度器 -----------------
 
@@ -734,7 +630,7 @@ def _run_category_job(job: dict):
                     if do_poster:
                         diagnostic = {}
                         cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
-                        s_prefix = cfg.get("default_prefix", "http://23.19.231.70:5244/d/115")
+                        s_prefix = cfg.get("default_prefix", DEFAULT_STREAM_PREFIX)
                         ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p, diagnostic=diagnostic, cd2_mount_path=cd2_root, stream_prefix=s_prefix)
                         if ok:
                             with gov_lock:
@@ -754,7 +650,7 @@ def _run_category_job(job: dict):
                     else:
                         # 封面已有，仅需深度探针补充音视频流信息与大小
                         cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
-                        s_prefix = cfg.get("default_prefix", "http://23.19.231.70:5244/d/115")
+                        s_prefix = cfg.get("default_prefix", DEFAULT_STREAM_PREFIX)
                         host_target = map_to_cd2_path(raw_t, cd2_root, s_prefix)
                         m_info = probe_media_info(host_target, timeout_sec=35)
                         if update_nfo_with_streamdetails(nfo_p, m_info):
@@ -854,12 +750,10 @@ def ensure_access_token() -> str:
     env_token = os.environ.get(ACCESS_TOKEN_ENV, "").strip()
     if env_token:
         return env_token
-    cfg = load_config()
-    token = str(cfg.get("access_token") or "").strip()
+    token = str(load_config().get("access_token") or "").strip()
     if not token:
         token = secrets.token_urlsafe(24)
-        cfg["access_token"] = token
-        save_config(cfg)
+        modify_config(lambda cfg: cfg.update(access_token=token))
         print(f"[TreeSTRM] 已自动生成访问口令并写入 {CONFIG_FILE} 的 access_token 字段: {token}", flush=True)
     return token
 
@@ -902,7 +796,8 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
         
     rules = cfg.get("rules", [])
     layer_limit = int(cfg.get("layer_limit") or 25)
-    
+    rule_updates: Dict[str, dict] = {}
+
     for r in rules:
         if not r.get("enabled", True): continue
         if rule_ids and r.get("id") not in rule_ids: continue
@@ -929,11 +824,13 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
             )
             elapsed = round(time.time() - start_t, 2)
             
-            r["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            r["last_status"] = f"成功 (新增 +{vc}, 跳过 {vs}, 清理过期 -{vd})"
-            r["video_count"] = len(videos)
-            r["sub_count"] = len(subs)
-            r["ext_stats"] = ext_stats
+            rule_updates[r.get("id")] = {
+                "last_sync": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "last_status": f"成功 (新增 +{vc}, 跳过 {vs}, 清理过期 -{vd})",
+                "video_count": len(videos),
+                "sub_count": len(subs),
+                "ext_stats": ext_stats,
+            }
             
             append_history({
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -950,8 +847,10 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
                 "ext_stats": ext_stats
             })
         except Exception as e:
-            r["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            r["last_status"] = f"失败: {str(e)}"
+            rule_updates[r.get("id")] = {
+                "last_sync": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "last_status": f"失败: {str(e)}",
+            }
             push_log(f"❌ 规则【{r_name}】执行失败: {str(e)}")
             append_history({
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -961,8 +860,12 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
             })
         
         time.sleep(2)
-            
-    save_config(cfg)
+
+    def _apply_rule_updates(fresh: dict):
+        for rule in fresh.get("rules", []):
+            if rule.get("id") in rule_updates:
+                rule.update(rule_updates[rule.get("id")])
+    modify_config(_apply_rule_updates)
     push_log("======== 全部全量任务执行完毕 ========")
 
 @app.get("/api/config")
@@ -971,20 +874,25 @@ def get_config():
 
 @app.post("/api/config")
 def update_config(data: ConfigModel):
-    cfg = load_config()
-    cfg["cookie"] = data.cookie
-    cfg["default_prefix"] = data.default_prefix
-    cfg["cd2_mount_path"] = data.cd2_mount_path or "/Movies/CloudDrive/115"
-    cfg["default_output"] = data.default_output
-    cfg["layer_limit"] = data.layer_limit
-    cfg["sync_subtitles"] = data.sync_subtitles
-    cfg["auto_cleanup_orphan"] = data.auto_cleanup_orphan
-    cfg["cover_threads"] = data.cover_threads
-    cfg["protected_categories"] = data.protected_categories
-    cfg["ai_governance"] = data.ai_governance.dict()
-    cfg["auto_sync_enabled"] = data.auto_sync_enabled
-    cfg["auto_sync_interval_mins"] = data.auto_sync_interval_mins
-    save_config(cfg)
+    def _apply(cfg: dict):
+        cfg["cookie"] = data.cookie
+        cfg["default_prefix"] = data.default_prefix
+        cfg["cd2_mount_path"] = data.cd2_mount_path or DEFAULT_CD2_MOUNT_PATH
+        cfg["default_output"] = data.default_output
+        cfg["layer_limit"] = data.layer_limit
+        cfg["sync_subtitles"] = data.sync_subtitles
+        cfg["auto_cleanup_orphan"] = data.auto_cleanup_orphan
+        cfg["cover_threads"] = data.cover_threads
+        ai_cfg = dict(cfg.get("ai_governance") or {})
+        ai_cfg.update(data.ai_governance.dict())
+        cfg["ai_governance"] = ai_cfg
+        cfg["auto_sync_enabled"] = data.auto_sync_enabled
+        cfg["auto_sync_interval_mins"] = max(5, int(data.auto_sync_interval_mins))
+        for key in ("tpdb_base", "tpdb_token", "telegram_bot_token", "telegram_chat_id"):
+            value = getattr(data, key)
+            if value is not None:
+                cfg[key] = value.strip()
+    cfg = modify_config(_apply)
     return {"status": "ok", "config": public_config(cfg)}
 
 # ----------------- 动态热调速 API -----------------
@@ -1044,8 +952,8 @@ def get_primary_tasks():
         "name": "成人",
         "description": f"{sub_categories_count} 个专属分类子专区 · 涵盖 3D动漫、FC2、欧美大厂、无码女优、女团与车模等",
         "badge": "核心媒体库",
-        "path": "/Movies/TreeStrms/成人",
-        "cid": "3291659674416491425",
+        "path": root_dir,
+        "cid": next((r.get("cid") for r in rules if r.get("name") == "成人"), DEFAULT_ADULT_CID),
         "sub_categories_count": sub_categories_count,
         "video_count": total_videos,
         "sub_count": total_subs,
@@ -1063,8 +971,8 @@ def get_primary_tasks():
         "name": "影视剧集 & 动漫",
         "description": "电影、4K蓝光原盘、电视剧、短剧、国漫日漫等主流正剧库",
         "badge": "规划拓展中",
-        "path": "/Movies/TreeStrms/影视",
-        "cid": "2557717596187131421",
+        "path": os.path.join(cfg.get("default_output", DEFAULT_OUTPUT_DIR), "影视"),
+        "cid": DEFAULT_MOVIES_CID,
         "sub_categories_count": 0,
         "video_count": 0,
         "sub_count": 0,
@@ -1158,7 +1066,10 @@ def get_rules_api():
         r_name = r.get("name", "未命名任务")
         r_id = r.get("id", r_name)
         r_cid = r.get("cid", "")
-        r_dir = os.path.join(output_base, r_name)
+        # STRM 落地路径为 <规则输出目录>/<规则名>/...（目录树相对路径以规则名开头）
+        r_dir = os.path.join(r.get("output_dir") or output_base, r_name)
+        # 专区底账缓存只覆盖 <default_output>/成人，其它规则不能复用，否则所有卡片都显示成人库的数字
+        uses_category_cache = os.path.abspath(r_dir) == os.path.abspath(os.path.join(output_base, "成人"))
         
         # 统计该对账任务目录下的实际文件与子专区数
         v_count = 0
@@ -1177,7 +1088,7 @@ def get_rules_api():
             except Exception:
                 pass
 
-        if cached_map:
+        if cached_map and uses_category_cache:
             subdirs_list = sorted(list(cached_map.keys()))
             v_count = sum(x.get("video_count", 0) for x in cached_map.values())
             c_count = sum(x.get("cover_count", 0) for x in cached_map.values())
@@ -1219,7 +1130,7 @@ def get_rules_api():
             "id": r_id,
             "name": r_name,
             "cid": r_cid,
-            "prefix": r.get("prefix", "http://23.19.231.70:5244/d/115"),
+            "prefix": r.get("prefix", DEFAULT_STREAM_PREFIX),
             "output_dir": r.get("output_dir", output_base),
             "enabled": r.get("enabled", True),
             "last_sync": r.get("last_sync", "未同步"),
@@ -1230,50 +1141,48 @@ def get_rules_api():
             "nfo_count": n_count,
             "cover_pct": c_pct,
             "nfo_pct": n_pct,
-            "sub_categories_count": len(subdirs_list)
+            "sub_categories_count": len(subdirs_list),
+            # 专区治理（/api/categories）目前只支持 <default_output>/成人
+            "governable": uses_category_cache
         })
     return result
 
 @app.post("/api/rules/add")
 def add_rule_api(payload: dict):
-    cfg = load_config()
-    rules = cfg.get("rules", [])
-    name = payload.get("name", "").strip()
-    cid = payload.get("cid", "").strip()
+    name = str(payload.get("name") or "").strip()
+    cid = str(payload.get("cid") or "").strip()
     if not name or not cid:
         raise HTTPException(status_code=400, detail="任务名称与 115 目录 CID 不能为空！")
-    
-    # 检查重名
-    for r in rules:
-        if r.get("name") == name or r.get("cid") == cid:
-            raise HTTPException(status_code=400, detail=f"已存在同名或同 CID 任务：{name}")
-            
-    new_rule = {
-        "id": f"rule_{int(time.time())}",
-        "name": name,
-        "cid": cid,
-        "output_dir": payload.get("output_dir", cfg.get("default_output", "/Movies/TreeStrms")),
-        "prefix": payload.get("prefix", cfg.get("default_prefix", "http://23.19.231.70:5244/d/115")),
-        "sync_subtitles": True,
-        "enabled": True,
-        "last_sync": "刚刚创建",
-        "last_status": "就绪",
-        "video_count": 0,
-        "sub_count": 0
-    }
-    rules.append(new_rule)
-    cfg["rules"] = rules
-    save_config(cfg)
+    created: Dict[str, dict] = {}
+
+    def _apply(cfg: dict):
+        rules = cfg.setdefault("rules", [])
+        for r in rules:
+            if r.get("name") == name or r.get("cid") == cid:
+                raise HTTPException(status_code=400, detail=f"已存在同名或同 CID 任务：{name}")
+        created["rule"] = {
+            "id": f"rule_{int(time.time() * 1000)}",
+            "name": name,
+            "cid": cid,
+            "output_dir": str(payload.get("output_dir") or "").strip() or cfg.get("default_output", DEFAULT_OUTPUT_DIR),
+            "prefix": str(payload.get("prefix") or "").strip() or cfg.get("default_prefix", DEFAULT_STREAM_PREFIX),
+            "sync_subtitles": True,
+            "auto_cleanup_orphan": True,
+            "enabled": True,
+            "last_sync": "刚刚创建",
+            "last_status": "就绪",
+            "video_count": 0,
+            "sub_count": 0
+        }
+        rules.append(created["rule"])
+
+    modify_config(_apply)
     push_log(f"➕ 新增通用对账任务【{name}】(CID: {cid}) 成功！")
-    return {"status": "ok", "rule": new_rule}
+    return {"status": "ok", "rule": created["rule"]}
 
 @app.delete("/api/rules/{rule_id}")
 def delete_rule_api(rule_id: str):
-    cfg = load_config()
-    rules = cfg.get("rules", [])
-    rules = [r for r in rules if r.get("id") != rule_id and r.get("name") != rule_id]
-    cfg["rules"] = rules
-    save_config(cfg)
+    modify_config(lambda cfg: cfg.update(rules=[r for r in cfg.get("rules", []) if r.get("id") != rule_id and r.get("name") != rule_id]))
     push_log(f"🗑️ 已删除对账任务: {rule_id}")
     return {"status": "ok"}
 
@@ -1372,19 +1281,24 @@ def get_categories(refresh: bool = False):
 
 @app.post("/api/categories/toggle_lock")
 def toggle_category_lock(category: str):
-    cfg = load_config()
-    protected_list = cfg.get("protected_categories", DEFAULT_PROTECTED_CATEGORIES)
-    if category in protected_list:
-        protected_list.remove(category)
-        push_log(f"🔓 已手动【解锁】专区【{category}】，现已开放 AI 治理与封面抽帧！")
-        status = "unlocked"
-    else:
-        protected_list.append(category)
+    result: Dict[str, bool] = {}
+
+    def _apply(cfg: dict):
+        protected_list = list(cfg.get("protected_categories", DEFAULT_PROTECTED_CATEGORIES))
+        if category in protected_list:
+            protected_list.remove(category)
+            result["locked"] = False
+        else:
+            protected_list.append(category)
+            result["locked"] = True
+        cfg["protected_categories"] = protected_list
+
+    modify_config(_apply)
+    if result["locked"]:
         push_log(f"🔒 已手动【加锁】保护专区【{category}】，原版封面受到保护！")
-        status = "locked"
-    cfg["protected_categories"] = protected_list
-    save_config(cfg)
-    return {"status": "ok", "category": category, "is_scraped": (status == "locked")}
+    else:
+        push_log(f"🔓 已手动【解锁】专区【{category}】，现已开放 AI 治理与封面抽帧！")
+    return {"status": "ok", "category": category, "is_scraped": result["locked"]}
 
 @app.post("/api/categories/clean_orphan")
 def trigger_clean_orphan(category: str):
@@ -1444,7 +1358,7 @@ def get_status():
         "gov_progress": gov_progress,
         "current_running_job": current_running_job,
         "governance_queue": governance_queue,
-        "live_logs": live_log_messages[-80:],
+        "live_logs": live_log_messages[-300:],
         "history": load_history()[:15],
         "current_delay": get_dynamic_delay()
     }

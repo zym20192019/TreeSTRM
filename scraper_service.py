@@ -2,18 +2,30 @@ import os, sys, re, time, json, requests, threading
 import xml.etree.ElementTree as ET
 from urllib.parse import quote, urljoin
 from bs4 import BeautifulSoup
+from core.config import load_config, DEFAULT_TPDB_BASE
 
 # ==============================================================================
 # Amane-Style Complete 24-Site Crawler Matrix & Multi-Source Waterfall Engine
 # 完整复刻 Amane 全量 24 站点解析、制作商直连、4级阶梯式瀑布流与断点续跑状态机
 # ==============================================================================
 
+# 内置兜底 Token：config.json 未配置 tpdb_token 时使用
 TPDB_TOKEN = "GYJTmJLvxL1XKiQ3XSJhImg9fWb3C6yVztbNyp8pf1cd2f25"
-TPDB_HEADERS = {
-    "Authorization": f"Bearer {TPDB_TOKEN}",
-    "Accept": "application/json",
-    "User-Agent": "TreeSTRM-Scraper/3.0 (Amane-Complete-Architecture)"
-}
+
+def _tpdb_settings():
+    """每次请求读取配置，页面保存 TPDB 设置后无需重启即可生效"""
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    token = str(cfg.get("tpdb_token") or "").strip() or TPDB_TOKEN
+    base = (str(cfg.get("tpdb_base") or "").strip() or DEFAULT_TPDB_BASE).rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "TreeSTRM-Scraper/3.0 (Amane-Complete-Architecture)"
+    }
+    return base, headers
 
 COMMON_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -415,6 +427,7 @@ def scrape_getchu(number: str) -> dict:
 
 # --- ⑤ 欧美商业 Scene 专区 (ThePornDB) ---
 def scrape_tpdb_scene(info: dict) -> dict:
+    tpdb_base, tpdb_headers = _tpdb_settings()
     site = info.get("site", "")
     date_str = info.get("date")
     clean_title = info.get("clean_title", "")
@@ -447,8 +460,8 @@ def scrape_tpdb_scene(info: dict) -> dict:
     # 策略 1: 厂牌 + 日期精确匹配（必须严格匹配厂牌）
     if site and date_str:
         try:
-            url = f"https://api.theporndb.net/scenes?q={quote(site)}&date={date_str}"
-            r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
+            url = f"{tpdb_base}/scenes?q={quote(site)}&date={date_str}"
+            r = requests.get(url, headers=tpdb_headers, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
                 for it in data:
@@ -462,8 +475,8 @@ def scrape_tpdb_scene(info: dict) -> dict:
     q_str = f"{site} {clean_title}".strip()
     if q_str:
         try:
-            url = f"https://api.theporndb.net/scenes?q={quote(q_str)}"
-            r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
+            url = f"{tpdb_base}/scenes?q={quote(q_str)}"
+            r = requests.get(url, headers=tpdb_headers, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
                 for it in data:
@@ -478,8 +491,8 @@ def scrape_tpdb_scene(info: dict) -> dict:
     pure_actors = re.sub(r'[\.\s_\-]+', ' ', pure_actors).strip()
     if pure_actors and len(pure_actors) > 3:
         try:
-            url = f"https://api.theporndb.net/scenes?q={quote(pure_actors)}"
-            r = requests.get(url, headers=TPDB_HEADERS, timeout=8)
+            url = f"{tpdb_base}/scenes?q={quote(pure_actors)}"
+            r = requests.get(url, headers=tpdb_headers, timeout=8)
             if r.status_code == 200:
                 data = r.json().get('data', [])
                 for it in data:

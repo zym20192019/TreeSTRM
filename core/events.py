@@ -9,7 +9,7 @@ import os
 import glob
 import requests
 from typing import List, Optional
-from core.config import SPEED_FILE, DATA_DIR
+from core.config import SPEED_FILE, DATA_DIR, load_config
 
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_RETENTION_DAYS = 7
@@ -18,8 +18,6 @@ LOG_RETENTION_DAYS = 7
 live_log_messages: List[str] = []
 MAX_LIVE_LOGS = 1000
 
-TG_BOT_TOKEN = ""
-TG_CHAT_ID = "5662349315"
 # 强制红线：单 Cookie 慢牛流控底线 >= 2.0s
 MIN_SAFE_DELAY = 2.0
 
@@ -59,11 +57,18 @@ def get_live_logs() -> List[str]:
     return list(live_log_messages)
 
 def send_telegram_alert(text: str):
-    if not TG_BOT_TOKEN:
+    """config.json 中同时配置 telegram_bot_token 与 telegram_chat_id 时才推送"""
+    try:
+        cfg = load_config()
+    except Exception:
+        return
+    bot_token = str(cfg.get("telegram_bot_token") or "").strip()
+    chat_id = str(cfg.get("telegram_chat_id") or "").strip()
+    if not bot_token or not chat_id:
         return
     try:
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TG_CHAT_ID, "text": text}, timeout=10)
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception:
         pass
 

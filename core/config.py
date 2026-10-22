@@ -8,7 +8,7 @@ import sys
 import json
 import shutil
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from pydantic import BaseModel
 
 BASE_DIR = "/opt/treestrm"
@@ -17,6 +17,14 @@ CONFIG_BACKUP_FILE = CONFIG_FILE + ".bak"
 DATA_DIR = os.path.join(BASE_DIR, "data")
 LOGS_FILE = os.path.join(DATA_DIR, "history.json")
 SPEED_FILE = os.path.join(DATA_DIR, "speed.json")
+
+# 部署相关默认值集中于此（仅在 config.json 缺失对应字段时使用）
+DEFAULT_STREAM_PREFIX = "http://23.19.231.70:5244/d/115"
+DEFAULT_CD2_MOUNT_PATH = "/Movies/CloudDrive/115"
+DEFAULT_OUTPUT_DIR = "/Movies/TreeStrms"
+DEFAULT_ADULT_CID = "3291659674416491425"
+DEFAULT_MOVIES_CID = "2557717596187131421"
+DEFAULT_TPDB_BASE = "https://api.theporndb.net"
 
 DEFAULT_PROTECTED_CATEGORIES = ["欧美刮削", "欧美刮削_01", "AV女优", "FC2", "我爱的AV", "无码刮削", "AdultMovie"]
 
@@ -39,15 +47,6 @@ def default_ai_governance() -> Dict[str, Any]:
         "batch_size": 50
     }
 
-class RuleModel(BaseModel):
-    name: str
-    cid: str
-    output_dir: str
-    prefix: str
-    sync_subtitles: bool = True
-    auto_cleanup_orphan: bool = True
-    enabled: bool = True
-
 class AIGovModel(BaseModel):
     enabled: bool = True
     api_base: str = "https://openrouter.ai/api/v1"
@@ -58,22 +57,27 @@ class AIGovModel(BaseModel):
 class ConfigModel(BaseModel):
     cookie: str
     default_prefix: str
-    cd2_mount_path: Optional[str] = "/Movies/CloudDrive/115"
+    cd2_mount_path: Optional[str] = DEFAULT_CD2_MOUNT_PATH
     default_output: str
     layer_limit: int = 25
     sync_subtitles: bool = True
     auto_cleanup_orphan: bool = True
     cover_threads: int = 3
-    protected_categories: List[str] = DEFAULT_PROTECTED_CATEGORIES
     ai_governance: AIGovModel
     auto_sync_enabled: bool
     auto_sync_interval_mins: int
-    rules: List[RuleModel] = []
+    # rules / protected_categories 由各自接口维护，不随全局配置保存
+    # 以下字段为 None 表示前端未提交，保持原值
+    tpdb_base: Optional[str] = None
+    tpdb_token: Optional[str] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
 
 class ConfigLoadError(RuntimeError):
     """config.json 存在但无法解析且无可用备份。宁可报错停服，也绝不用默认配置覆盖用户配置。"""
 
-_config_write_lock = threading.Lock()
+# RLock：modify_config 持锁期间会调用 save_config
+_config_write_lock = threading.RLock()
 
 def load_cookie_from_env() -> str:
     env_p = "/opt/115-agent/.env"
@@ -98,7 +102,7 @@ def _apply_runtime_defaults(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("protected_categories", list(DEFAULT_PROTECTED_CATEGORIES))
     cfg.setdefault("ai_governance", default_ai_governance())
     cfg.setdefault("cover_threads", 3)
-    cfg.setdefault("cd2_mount_path", "/Movies/CloudDrive/115")
+    cfg.setdefault("cd2_mount_path", DEFAULT_CD2_MOUNT_PATH)
     return cfg
 
 def load_config() -> dict:
@@ -118,9 +122,9 @@ def load_config() -> dict:
 
     cfg = {
         "cookie": load_cookie_from_env(),
-        "default_prefix": "http://23.19.231.70:5244/d/115",
-        "cd2_mount_path": "/Movies/CloudDrive/115",
-        "default_output": "/Movies/TreeStrms",
+        "default_prefix": DEFAULT_STREAM_PREFIX,
+        "cd2_mount_path": DEFAULT_CD2_MOUNT_PATH,
+        "default_output": DEFAULT_OUTPUT_DIR,
         "layer_limit": 25,
         "sync_subtitles": True,
         "auto_cleanup_orphan": True,
@@ -133,9 +137,9 @@ def load_config() -> dict:
             {
                 "id": "chengren_all",
                 "name": "成人",
-                "cid": "3291659674416491425",
-                "output_dir": "/Movies/TreeStrms",
-                "prefix": "http://23.19.231.70:5244/d/115",
+                "cid": DEFAULT_ADULT_CID,
+                "output_dir": DEFAULT_OUTPUT_DIR,
+                "prefix": DEFAULT_STREAM_PREFIX,
                 "sync_subtitles": True,
                 "auto_cleanup_orphan": True,
                 "enabled": True,
@@ -167,3 +171,11 @@ def save_config(cfg: dict):
             except (OSError, ValueError):
                 pass
         os.replace(tmp_path, CONFIG_FILE)
+
+def modify_config(mutator: Callable[[dict], None]) -> dict:
+    """读-改-写整体加锁，避免多线程各自 load/save 时后写者覆盖前者的修改（丢失更新）"""
+    with _config_write_lock:
+        cfg = load_config()
+        mutator(cfg)
+        save_config(cfg)
+        return cfg
