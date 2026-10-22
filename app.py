@@ -1,4 +1,3 @@
-import scraper_service
 import os, sys, re, time, json, asyncio, threading, requests, subprocess, urllib.parse, shlex, secrets, hmac
 from urllib.parse import unquote
 from typing import Dict, List, Any, Optional
@@ -677,35 +676,46 @@ def _run_category_job(job: dict):
     push_log(done_msg)
     send_telegram_alert(f"✅ [TreeSTRM 完成通知]\n{done_msg}")
     
-    # 动态更新全量底账缓存中该分类的真实物理统计，保证 UI 刷新立即可见与 100% 准确
+    refresh_category_cache(category_name)
+    refresh_emby_after_job(category_name)
+    current_running_job = None
+
+
+_category_cache_lock = threading.Lock()
+
+def refresh_category_cache(category_name: str):
+    """动态更新全量底账缓存中该分类的真实物理统计，保证 UI 刷新立即可见"""
     try:
         from engine.scanner import scan_single_category
+        cfg = load_config()
         cache_file = os.path.join(DATA_DIR, "categories_cache.json")
         cat_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人", category_name)
         fresh_stat = scan_single_category(cat_dir)
-        c_map = {}
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r", encoding="utf-8") as cf:
-                    c_map = json.load(cf)
-            except Exception:
-                pass
-        c_map[category_name] = fresh_stat
-        with open(cache_file, "w", encoding="utf-8") as cf:
-            json.dump(c_map, cf, ensure_ascii=False, indent=2)
+        with _category_cache_lock:
+            c_map = {}
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as cf:
+                        c_map = json.load(cf)
+                except Exception:
+                    pass
+            c_map[category_name] = fresh_stat
+            tmp_file = cache_file + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as cf:
+                json.dump(c_map, cf, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, cache_file)
     except Exception as e:
         push_log(f"⚠️ 更新专区底账缓存异常: {e}")
 
+def refresh_emby_after_job(category_name: str):
     try:
-        cfg_after = load_config()
-        if cfg_after.get("auto_refresh_after_governance", False):
+        if load_config().get("auto_refresh_after_governance", False):
             from services.emby_client import EmbyClient
             EmbyClient().trigger_category_refresh(category_name)
         else:
-            push_log(f"⏸️ 专区【{category_name}】NFO 已完成，按配置暂不自动刷新 Emby")
+            push_log(f"⏸️ 专区【{category_name}】元数据已更新，按配置暂不自动刷新 Emby")
     except Exception:
         pass
-    current_running_job = None
 
 def queue_worker_loop():
     while True:
@@ -770,6 +780,18 @@ async def require_access_token(request: Request, call_next):
         if not hmac.compare_digest(supplied.encode("utf-8"), ACCESS_TOKEN.encode("utf-8")):
             return JSONResponse(status_code=401, content={"detail": "访问口令错误或缺失"})
     return await call_next(request)
+
+# ----------------- 官方刮削模块 -----------------
+from scraper import ScraperService
+from scraper.api import build_router as build_scraper_router
+
+def _on_scrape_category_done(category_name: str, stats: dict):
+    refresh_category_cache(category_name)
+    refresh_emby_after_job(category_name)
+
+scraper_svc = ScraperService(data_dir=DATA_DIR, load_config=load_config, log=push_log, on_category_done=_on_scrape_category_done)
+scraper_svc.start()
+app.include_router(build_scraper_router(lambda: scraper_svc, modify_config))
 
 sync_lock = threading.Lock()
 
@@ -988,67 +1010,14 @@ def get_primary_tasks():
     return res
 
 @app.post("/api/categories/scrape_official")
-def trigger_official_scrape(category: str, max_items: int = 0):
-    cfg = load_config()
-    base_cat_dir = os.path.join(cfg.get("default_output", "/Movies/TreeStrms"), "成人", category)
-    if not os.path.exists(base_cat_dir):
-        return {"status": "error", "message": "专区路径不存在"}
-        
-    def _scrape_task():
-        push_log(f"======== 🎬 启动专区【{category}】全源官方原画瀑布流刮削流水线 ========")
-        cookie = cfg.get("cookie", "")
-        session = create_115_session(cookie) if cookie else None
-        ai_cfg = cfg.get("ai_governance", {})
-        
-        poster_count = 0
-        scraped_count = 0
-        failed_items = [] # 记录第一轮未命中的文件: (root, sf, base_fn, parent_dir)
-        
-        # ----------------- 【第 1 轮】：原生高置信度官方刮削 -----------------
-        for root, dirs, files in os.walk(base_cat_dir):
-            parent_dir = os.path.basename(root)
-            strms = [f for f in files if f.endswith('.strm')]
-            for sf in strms:
-                base_fn = sf[:-5]
-                poster_path = os.path.join(root, f"{base_fn}-poster.jpg")
-                nfo_path = os.path.join(root, f"{base_fn}.nfo")
-                
-                need_poster = not os.path.exists(poster_path) and not os.path.exists(os.path.join(root, f"{base_fn}-poster.jpeg"))
-                need_nfo = not os.path.exists(nfo_path)
-                
-                if need_poster or need_nfo:
-                    scene = scraper_service.scrape_official_scene(base_fn, parent_dir)
-                    if scene:
-                        # 只要网络上确实抓到了真实官方元数据：
-                        if need_poster:
-                            p_url = scene.get('poster_url') or scene.get('poster') or (scene.get('background') or {}).get('full')
-                            if p_url and scraper_service.download_and_save_poster(p_url, poster_path):
-                                poster_count += 1
-                                push_log(f"📸 [官方原画补齐] {base_fn} ➔ [{scene.get('title')}]")
-                                
-                        if need_nfo:
-                            # 哪怕图片未取到，只要官方真实信息存在，坚决补齐真实正版 NFO！
-                            nfo_content = scraper_service.generate_nfo_file_content(scene, base_fn)
-                            with open(nfo_path, 'w', encoding='utf-8') as nfo_f:
-                                nfo_f.write(nfo_content)
-                            scraped_count += 1
-                            push_log(f"📝 [正版NFO补齐] {base_fn} ➔ [{scene.get('title')}]")
-                    else:
-                        # 如果全网没有官方真实信息（例如番号写错或全网无记录），绝不强行生造假 NFO！
-                        failed_items.append((root, sf, base_fn, parent_dir))
-                    time.sleep(1.0)
-                    if max_items > 0 and (poster_count + scraped_count) >= max_items:
-                        break
-
-        push_log(f"🎉 专区【{category}】官方瀑布流刮削完成！成功补齐海报: {poster_count} 张，补齐 NFO: {scraped_count} 个。共有 {len(failed_items)} 部未直接命中。")
-        try:
-            from services.emby_client import EmbyClient
-            EmbyClient().trigger_category_refresh(category)
-        except Exception:
-            pass
-        
-    threading.Thread(target=_scrape_task, daemon=True).start()
-    return {"status": "started", "message": f"已启动专区【{category}】官方瀑布流刮削流水线！"}
+def trigger_official_scrape(category: str, max_items: int = 0, overwrite: Optional[str] = None, retry_failed: bool = False):
+    """兼容旧入口：转交刮削模块排队执行"""
+    from scraper.runner import PathError
+    try:
+        job_id = scraper_svc.enqueue(category, {"max_items": max_items, "overwrite": overwrite, "retry_failed": retry_failed})
+    except PathError as exc:
+        return {"status": "error", "message": str(exc)}
+    return {"status": "queued", "job_id": job_id, "message": f"专区【{category}】已加入官方刮削队列"}
 
 
 
@@ -1360,7 +1329,8 @@ def get_status():
         "governance_queue": governance_queue,
         "live_logs": live_log_messages[-300:],
         "history": load_history()[:15],
-        "current_delay": get_dynamic_delay()
+        "current_delay": get_dynamic_delay(),
+        "scraper": scraper_svc.brief(),
     }
 
 @app.get("/", response_class=HTMLResponse)

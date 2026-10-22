@@ -18,12 +18,13 @@ def clean_orphan_metadata_for_category(category_name: str, base_dir: str = "/Mov
     cfg = load_config()
     target_dir = os.path.join(cfg.get("default_output", base_dir), "成人", category_name)
     if not os.path.exists(target_dir):
-        return {"deleted_nfo": 0, "deleted_posters": 0, "deleted_thumbs": 0, "total": 0}
+        return {"deleted_nfo": 0, "deleted_posters": 0, "deleted_thumbs": 0, "deleted_fanarts": 0, "total": 0}
 
     push_log(f"======== 🧹 开始对专区【{category_name}】执行孤立失效元数据清理 ========")
     del_nfo = 0
     del_poster = 0
     del_thumb = 0
+    del_fanart = 0
 
     for root, dirs, files in os.walk(target_dir):
         strms = set()
@@ -64,11 +65,22 @@ def clean_orphan_metadata_for_category(category_name: str, base_dir: str = "/Mov
                     except Exception:
                         pass
 
-    total_cleaned = del_nfo + del_poster + del_thumb
-    push_log(f"✅ 专区【{category_name}】失效元数据清理完毕！共删除孤立文件: {total_cleaned} 个 (NFO: -{del_nfo}, 海报: -{del_poster}, 缩略图: -{del_thumb})")
+            # 4. 孤立 Fanart（刮削模块写入的 -fanart.jpg；-fanart.gif 动图不动）
+            elif f.endswith('-fanart.jpg') or f.endswith('-fanart.jpeg'):
+                base = f[:-11] if f.endswith('-fanart.jpg') else f[:-12]
+                if base not in strms:
+                    try:
+                        os.remove(p)
+                        del_fanart += 1
+                    except Exception:
+                        pass
+
+    total_cleaned = del_nfo + del_poster + del_thumb + del_fanart
+    push_log(f"✅ 专区【{category_name}】失效元数据清理完毕！共删除孤立文件: {total_cleaned} 个 (NFO: -{del_nfo}, 海报: -{del_poster}, 缩略图: -{del_thumb}, Fanart: -{del_fanart})")
     return {
         "deleted_nfo": del_nfo,
         "deleted_posters": del_poster,
         "deleted_thumbs": del_thumb,
+        "deleted_fanarts": del_fanart,
         "total": total_cleaned
     }

@@ -231,7 +231,7 @@
     .input-group .input { flex: 1; }
     .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 0; }
     .switch-row .text { display: flex; flex-direction: column; }
-    .switch { position: relative; width: 38px; height: 22px; flex: none; }
+    .switch { position: relative; display: inline-block; vertical-align: middle; width: 38px; height: 22px; flex: none; }
     .switch input { opacity: 0; width: 0; height: 0; }
     .switch span {
         position: absolute; inset: 0; border-radius: 11px; background: var(--border-strong); cursor: pointer; transition: background .15s;
@@ -271,8 +271,25 @@
     .toast.error { border-left-color: var(--danger); }
     @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
 
+    /* ---------- 官方刮削 ---------- */
+    .sc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .sc-file { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+    .sc-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+    .sc-msg { font-size: 12px; color: var(--text-2); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 18px; font-size: 12px; color: var(--text-2); border-top: 1px solid var(--border); }
+    dialog.wide { width: min(880px, calc(100vw - 32px)); }
+    .ident { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .cands { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; margin-top: 12px; }
+    .cand { display: grid; grid-template-columns: 120px 1fr auto; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; align-items: center; }
+    .cand.good { border-color: rgba(63, 191, 127, .45); }
+    .cand-img { width: 120px; height: 80px; object-fit: cover; border-radius: 6px; background: var(--panel-2); }
+    .cand-title { font-weight: 600; font-size: 13px; }
+    .cand-meta { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+    .cand-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+
     @media (max-width: 1100px) {
         .stats { grid-template-columns: repeat(2, 1fr); }
+        .sc-grid { grid-template-columns: repeat(2, 1fr); }
     }
     @media (max-width: 820px) {
         .app { grid-template-columns: 1fr; }
@@ -305,6 +322,11 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
             专区治理
             <span class="nav-badge hidden" id="nav-queue-badge"></span>
+        </button>
+        <button class="nav-item" data-action="nav" data-view="scraper">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 15 5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg>
+            官方刮削
+            <span class="nav-badge hidden" id="nav-scrape-badge"></span>
         </button>
         <button class="nav-item" data-action="nav" data-view="logs">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 17 6-6-6-6M12 19h8"/></svg>
@@ -413,6 +435,121 @@
                             </thead>
                             <tbody id="cat-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
                         </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============ 官方刮削 ============ -->
+            <section data-view="scraper" class="hidden section-gap">
+                <div class="sc-grid">
+                    <div class="card stat"><div class="stat-label">已匹配</div><div class="stat-value" id="sc-n-matched">—</div><div class="stat-sub">已写入官方元数据</div></div>
+                    <div class="card stat"><div class="stat-label">待确认</div><div class="stat-value" id="sc-n-low">—</div><div class="stat-sub">有候选但置信度不足</div></div>
+                    <div class="card stat"><div class="stat-label">未找到 / 出错</div><div class="stat-value" id="sc-n-fail">—</div><div class="stat-sub" id="sc-n-fail-sub">&nbsp;</div></div>
+                    <div class="card stat"><div class="stat-label">刮削队列</div><div class="stat-value" id="sc-n-queue">—</div><div class="stat-sub" id="sc-n-queue-sub">&nbsp;</div></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <h2>刮削任务</h2>
+                        <span class="faint" style="font-size:12px">在「专区治理」中点击专区的「官方刮削」加入队列，任务按顺序执行，服务重启后自动续跑</span>
+                        <div class="spacer"></div>
+                        <button class="btn btn-sm" data-action="sc-cancel" id="sc-btn-cancel" disabled>停止当前</button>
+                        <button class="btn btn-sm btn-ghost" data-action="sc-clear-queue" id="sc-btn-clear" disabled>清空队列</button>
+                    </div>
+                    <div class="card-body" id="sc-progress"><div class="faint">空闲</div></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>任务</th><th>专区</th><th>状态</th><th class="num">处理</th><th class="num">成功</th><th class="num">待确认</th><th class="num">未找到</th><th class="num">写入 NFO / 海报</th><th>完成时间</th></tr></thead>
+                            <tbody id="sc-jobs"><tr><td colspan="9" class="empty">暂无任务</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="toolbar">
+                        <div class="chips" id="sc-filters">
+                            <button class="chip active" data-sc-status="low_confidence">待确认<span class="count"></span></button>
+                            <button class="chip" data-sc-status="not_found">未找到<span class="count"></span></button>
+                            <button class="chip" data-sc-status="error">出错<span class="count"></span></button>
+                            <button class="chip" data-sc-status="matched">已匹配<span class="count"></span></button>
+                            <button class="chip" data-sc-status="ignored">已忽略<span class="count"></span></button>
+                        </div>
+                        <input class="search" id="sc-search" type="search" placeholder="搜索文件名 / 番号 / 标题" autocomplete="off">
+                        <div class="spacer" style="flex:1"></div>
+                        <button class="btn btn-sm" data-action="sc-refresh">刷新</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>文件</th><th>识别</th><th>结果</th><th class="num">置信度</th><th>更新时间</th><th class="num">操作</th></tr></thead>
+                            <tbody id="sc-items"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="pager" id="sc-pager"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head">
+                        <h2>数据源</h2>
+                        <span class="faint" style="font-size:12px">按优先级依次查询，资料齐全后即停止；连续失败 3 次自动熔断冷却</span>
+                        <div class="spacer"></div>
+                        <button class="btn btn-sm" data-action="sc-health-reset" title="解除所有站点的熔断冷却">重置熔断</button>
+                        <button class="btn btn-sm btn-ghost" data-action="sc-cache-clear" title="删除已缓存的站点页面">清空页面缓存</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>站点</th><th>适用类型</th><th>状态</th><th class="num">请求 / 失败</th><th>最近错误</th><th class="num">启用</th></tr></thead>
+                            <tbody id="sc-sources"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-head"><h3>刮削设置</h3><div class="spacer"></div><button class="btn btn-sm btn-primary" data-action="sc-settings-save">保存刮削设置</button></div>
+                    <div class="card-body form-grid" id="sc-settings">
+                        <div class="field">
+                            <label for="sc-overwrite">默认覆盖策略</label>
+                            <select class="select" id="sc-overwrite">
+                                <option value="missing">只补缺失（不动已有文件）</option>
+                                <option value="replace_ai">替换 AI 生成的 NFO 与抽帧海报</option>
+                                <option value="all">全部覆盖（含其他刮削器的结果）</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="sc-min-score">最低置信度</label>
+                            <input class="input" id="sc-min-score" type="number" min="0.3" max="1" step="0.05">
+                            <span class="hint">低于此值的结果不写入，进入「待确认」等待人工选择。默认 0.6。</span>
+                        </div>
+                        <div class="field">
+                            <label for="sc-translate">标题 / 简介翻译</label>
+                            <select class="select" id="sc-translate">
+                                <option value="off">不翻译（保留日文原标题）</option>
+                                <option value="title">翻译标题</option>
+                                <option value="title_plot">翻译标题与简介</option>
+                            </select>
+                            <span class="hint">使用「AI 治理」中配置的接口，原文保留在 originaltitle。</span>
+                        </div>
+                        <div class="field">
+                            <label for="sc-max-sources">每部最多合并站点数</label>
+                            <input class="input" id="sc-max-sources" type="number" min="1" max="6">
+                        </div>
+                        <div class="field">
+                            <label for="sc-interval">同站请求间隔（秒）</label>
+                            <input class="input" id="sc-interval" type="number" min="0.3" max="30" step="0.1">
+                        </div>
+                        <div class="field">
+                            <label for="sc-retry-days">失败条目重试间隔（天）</label>
+                            <input class="input" id="sc-retry-days" type="number" min="0" max="365">
+                            <span class="hint">间隔内重跑专区时跳过已失败的条目，避免重复请求。</span>
+                        </div>
+                        <div class="field">
+                            <label for="sc-cache-days">页面缓存（天）</label>
+                            <input class="input" id="sc-cache-days" type="number" min="0" max="90">
+                        </div>
+                        <div class="field">
+                            <div class="switch-row"><div class="text"><label for="sc-crop">横版封套裁出竖版海报</label><span class="hint">日本有码封套取右侧正面</span></div><label class="switch"><input type="checkbox" id="sc-crop"><span></span></label></div>
+                            <div class="switch-row"><div class="text"><label for="sc-fanart">写入 fanart / thumb 横图</label></div><label class="switch"><input type="checkbox" id="sc-fanart"><span></span></label></div>
+                            <div class="switch-row"><div class="text"><label for="sc-title-num">标题前加番号</label></div><label class="switch"><input type="checkbox" id="sc-title-num"><span></span></label></div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -602,6 +739,54 @@
     </form>
 </dialog>
 
+<dialog id="dlg-scrape-job">
+    <form method="dialog" id="scrape-job-form" novalidate>
+        <div class="dlg-body">
+            <h3 id="sj-title">官方刮削</h3>
+            <p>从官方站点、JavBus / JavDB、ThePornDB 等抓取元数据，多站点合并并按置信度把关；置信度不足的条目不会写入，可在「官方刮削」页人工确认。</p>
+            <div class="field">
+                <label for="sj-overwrite">覆盖策略</label>
+                <select class="select" id="sj-overwrite">
+                    <option value="missing">只补缺失（不动已有文件）</option>
+                    <option value="replace_ai">替换 AI 生成的 NFO 与抽帧海报</option>
+                    <option value="all">全部覆盖（含其他刮削器的结果）</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="sj-max">最多处理条数</label>
+                <input class="input" id="sj-max" type="number" min="0" value="0">
+                <span class="hint">0 为不限；试跑可填 20。</span>
+            </div>
+            <div class="field">
+                <label class="toggle"><input type="checkbox" class="check" id="sj-retry"> 立即重试近期失败的条目</label>
+            </div>
+            <div class="dlg-error" id="sj-error"></div>
+        </div>
+        <div class="dlg-foot">
+            <button type="button" class="btn btn-ghost" data-close="dlg-scrape-job">取消</button>
+            <button type="submit" class="btn btn-primary" id="sj-submit">加入刮削队列</button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="dlg-match" class="wide">
+    <div class="dlg-body">
+        <h3>手动匹配</h3>
+        <div class="sc-file" id="mt-file"></div>
+        <div class="ident" id="mt-ident" style="margin-top:8px"></div>
+        <form id="mt-form" class="input-group" novalidate>
+            <input class="input" id="mt-query" placeholder="番号（如 SSIS-001）或关键词（欧美：站点 演员 标题）">
+            <select class="select" id="mt-source"><option value="">全部站点</option></select>
+            <button type="submit" class="btn btn-primary" id="mt-search">搜索</button>
+            <button type="button" class="btn" id="mt-apply-number" title="直接按输入的番号重新刮削并写入">按番号重刮</button>
+        </form>
+        <div class="faint" style="font-size:12px;margin-top:6px">选择候选后会覆盖该条目的 NFO 与图片，并记住此修正，之后重跑专区也沿用。</div>
+        <div class="cands" id="mt-cands"></div>
+        <div class="dlg-error" id="mt-error"></div>
+    </div>
+    <div class="dlg-foot"><button type="button" class="btn btn-ghost" data-close="dlg-match">关闭</button></div>
+</dialog>
+
 <dialog id="dlg-login">
     <form method="dialog" id="login-form" novalidate>
         <div class="dlg-body">
@@ -756,9 +941,18 @@ const state = {
     logSig: '',
     govSig: '',
     settingsDirty: false,
+    scStatus: 'low_confidence',
+    scQuery: '',
+    scOffset: 0,
+    scLimit: 50,
+    scItems: [],
+    scSources: [],
+    scSettings: null,
+    scSig: '',
+    match: null,
 };
 
-const VIEW_TITLES = { overview: '概览', categories: '专区治理', logs: '运行日志', settings: '系统设置' };
+const VIEW_TITLES = { overview: '概览', categories: '专区治理', scraper: '官方刮削', logs: '运行日志', settings: '系统设置' };
 
 function switchView(view) {
     if (state.view === 'settings' && view !== 'settings' && state.settingsDirty) {
@@ -771,6 +965,7 @@ function switchView(view) {
     if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
     if (view === 'overview') loadRules();
     if (view === 'categories') loadCategories();
+    if (view === 'scraper') loadScraper();
     if (view === 'logs') renderLogs(true);
     if (view === 'settings' && !state.settingsDirty) loadSettings();
 }
@@ -809,6 +1004,7 @@ function renderStatus() {
     // 顶部状态与全局活动条
     if (sp.is_syncing) setGlobalState('busy', '对账中');
     else if (running) setGlobalState('busy', '治理中');
+    else if (st.scraper && st.scraper.progress && st.scraper.progress.running) setGlobalState('busy', '刮削中');
     else setGlobalState('idle', '空闲');
     $('#btn-sync-all').disabled = !!sp.is_syncing;
 
@@ -835,7 +1031,31 @@ function renderStatus() {
                 <span class="detail">${gp.total_videos ? `已处理 ${fmtNum(gp.processed_videos)} / ${fmtNum(gp.total_videos)} · 封面 +${fmtNum(gp.covers_extracted)} · NFO +${fmtNum(gp.nfos_generated)}` : '正在盘点专区文件…'}${queue.length ? ` · 排队 ${queue.length} 个` : ''}</span>
             </div>`);
     }
+    const sc = st.scraper || { progress: {}, queued: 0 };
+    const scp = sc.progress || {};
+    if (scp.running) {
+        const p = pct(scp.done, scp.total);
+        items.push(`
+            <div class="card activity-item">
+                <span class="tag tag-accent"><span class="dot pulse"></span>官方刮削</span>
+                <span class="title">${esc(scp.category)}</span>
+                <span class="pct">${scp.total ? `${p}%` : ''}</span>
+                <div class="meter-track"><div class="meter-fill" style="width:${scp.total ? p : 3}%"></div></div>
+                <span class="detail">${scp.total ? `已处理 ${fmtNum(scp.done)} / ${fmtNum(scp.total)} · 成功 ${fmtNum(scp.matched)} · 待确认 ${fmtNum(scp.low_confidence)} · 未找到 ${fmtNum(scp.not_found)}` : '正在扫描专区文件…'}${sc.queued ? ` · 排队 ${sc.queued} 个` : ''}</span>
+            </div>`);
+    }
     $('#activity').innerHTML = items.join('');
+    const scBadge = $('#nav-scrape-badge');
+    const scPending = sc.queued + (scp.running ? 1 : 0);
+    scBadge.textContent = scPending;
+    scBadge.classList.toggle('hidden', scPending === 0);
+    if (state.view === 'scraper') {
+        // 刮削页：进度实时刷新；任务开始/结束时同时刷新结果列表
+        const scSig = JSON.stringify([scp.running, scp.job_id, sc.queued]);
+        if (scp.running || scSig !== state.scSig) loadScraperStatus();
+        if (scSig !== state.scSig && state.scSig !== '') loadScraperItems();
+        state.scSig = scSig;
+    }
 
     // 侧栏与流控
     const badge = $('#nav-queue-badge');
@@ -1127,17 +1347,343 @@ async function bulkGovern(button) {
     });
 }
 
+// 「官方刮削」按钮：弹出任务选项，提交到刮削模块队列
 async function scrapeCategory(category) {
-    const ok = await confirmDialog({
-        title: `官方刮削「${category}」`,
-        message: '为缺少海报或 NFO 的视频从官方站点与 ThePornDB 抓取真实元数据。\n只补齐缺失项，不覆盖已有文件；未命中的条目保持原样。',
-        okText: '开始刮削',
+    if (!state.scSettings) await loadScraperSettings();
+    const dlg = $('#dlg-scrape-job');
+    dlg.dataset.category = category;
+    $('#sj-title').textContent = `官方刮削「${category}」`;
+    $('#sj-overwrite').value = (state.scSettings && state.scSettings.overwrite) || 'missing';
+    $('#sj-max').value = '0';
+    $('#sj-retry').checked = false;
+    $('#sj-error').textContent = '';
+    dlg.showModal();
+}
+
+async function submitScrapeJob(e) {
+    e.preventDefault();
+    const dlg = $('#dlg-scrape-job');
+    const category = dlg.dataset.category;
+    const overwrite = $('#sj-overwrite').value;
+    if (overwrite === 'all') {
+        dlg.close();
+        const ok = await confirmDialog({
+            title: '确认全部覆盖？',
+            message: `「${category}」中已有的 NFO、海报（包括其他刮削器写入的）都会被官方结果替换。\n未匹配或置信度不足的条目不受影响。`,
+            okText: '全部覆盖', danger: true,
+        });
+        if (!ok) return;
+    }
+    await withBusy($('#sj-submit'), async () => {
+        try {
+            const res = await api('/api/scraper/jobs', {
+                method: 'POST',
+                body: { category, overwrite, max_items: intValue('sj-max', 0, 0), retry_failed: $('#sj-retry').checked },
+            });
+            if (dlg.open) dlg.close();
+            toast(res.message, 'ok');
+            pollStatus();
+        } catch (err) {
+            if (dlg.open) $('#sj-error').textContent = err.message;
+            else toast(`提交失败：${err.message}`, 'error');
+        }
     });
-    if (!ok) return;
+}
+
+// =====================================================================
+// 官方刮削
+// =====================================================================
+const KIND_LABELS = { fc2: 'FC2', jav: '日本有码', mgs: 'MGS 素人', uncensored: '日本无码', western: '欧美', hentai: '里番', unknown: '未识别' };
+const SC_STATUS = {
+    matched: ['tag-ok', '已匹配'],
+    low_confidence: ['tag-warn', '待确认'],
+    not_found: ['', '未找到'],
+    error: ['tag-danger', '出错'],
+    ignored: ['', '已忽略'],
+};
+const JOB_STATUS = { queued: ['tag-warn', '排队中'], running: ['tag-accent', '进行中'], done: ['tag-ok', '完成'], cancelled: ['', '已停止'], error: ['tag-danger', '异常'] };
+
+const fmtTime = ts => (ts ? new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false }) : '—');
+const statusTag = (map, key) => { const [cls, text] = map[key] || ['', key]; return `<span class="tag ${cls}">${esc(text)}</span>`; };
+
+function identText(info) {
+    if (!info || !info.kind) return '<span class="faint">—</span>';
+    const parts = [info.number && info.kind !== 'hentai' ? info.number : '', info.site, info.date].filter(Boolean);
+    const extra = [info.subtitle ? '中字' : '', info.uncensored_leak ? '流出' : '', info.part ? `CD${info.part}` : ''].filter(Boolean);
+    return `<span class="tag">${esc(KIND_LABELS[info.kind] || info.kind)}</span> <span class="mono">${esc(parts.join(' · '))}</span>`
+        + (extra.length ? ` <span class="faint">${esc(extra.join(' '))}</span>` : '');
+}
+
+async function loadScraper() {
+    await Promise.all([loadScraperStatus(), loadScraperItems(), state.scSettings ? null : loadScraperSettings()]);
+}
+
+async function loadScraperStatus() {
     try {
-        const res = await api('/api/categories/scrape_official', { method: 'POST', query: { category, max_items: '0' } });
-        toast(res.message || '已启动', res.status === 'error' ? 'error' : 'ok');
-    } catch (e) { toast(`启动失败：${e.message}`, 'error'); }
+        const st = await api('/api/scraper/status');
+        state.scSources = st.sources || [];
+        renderScraperStatus(st);
+    } catch (e) { $('#sc-progress').innerHTML = `<div class="faint">加载失败：${esc(e.message)}</div>`; }
+}
+
+function renderScraperStatus(st) {
+    const c = st.counts || {};
+    $('#sc-n-matched').textContent = fmtNum(c.matched);
+    $('#sc-n-low').textContent = fmtNum(c.low_confidence);
+    $('#sc-n-fail').textContent = fmtNum((c.not_found || 0) + (c.error || 0));
+    $('#sc-n-fail-sub').textContent = `未找到 ${fmtNum(c.not_found)} · 出错 ${fmtNum(c.error)} · 忽略 ${fmtNum(c.ignored)}`;
+    $$('#sc-filters .chip').forEach(chip => { chip.querySelector('.count').textContent = fmtNum(c[chip.dataset.scStatus]); });
+
+    const p = st.progress || {};
+    const queue = st.queue || [];
+    // 任务已结束但顶部活动条还停在上一次轮询的进度时，立即刷新一次
+    const brief = state.status && state.status.scraper && state.status.scraper.progress;
+    if (!p.running && brief && brief.running) pollStatus();
+    $('#sc-n-queue').textContent = String(queue.length + (p.running ? 1 : 0));
+    $('#sc-n-queue-sub').textContent = p.running ? `正在刮削：${p.category}` : (queue.length ? `等待：${queue.map(q => q.category).join('、')}` : '队列空闲');
+    $('#sc-btn-cancel').disabled = !p.running || p.cancelling;
+    $('#sc-btn-clear').disabled = !queue.length;
+    renderScProgress(p, queue.length);
+
+    const jobs = st.recent_jobs || [];
+    $('#sc-jobs').innerHTML = jobs.length ? jobs.map(j => {
+        const s = j.status === 'running' ? (p.job_id === j.id ? p : j.stats) : (j.stats || {});
+        return `<tr>
+            <td class="mono faint">#${j.id}</td>
+            <td>${esc(j.category)} <span class="faint" style="font-size:12px">${esc({ missing: '只补缺失', replace_ai: '替换AI', all: '全部覆盖' }[j.options.overwrite] || '')}</span></td>
+            <td>${statusTag(JOB_STATUS, j.status)}${j.message ? ` <span class="faint" title="${esc(j.message)}">ⓘ</span>` : ''}</td>
+            <td class="num">${fmtNum(s.done)} / ${fmtNum(s.total)}</td>
+            <td class="num">${fmtNum(s.matched)}</td>
+            <td class="num">${fmtNum(s.low_confidence)}</td>
+            <td class="num">${fmtNum(s.not_found)}${s.error ? ` <span class="faint">+${fmtNum(s.error)} 错</span>` : ''}</td>
+            <td class="num">${fmtNum(s.nfo)} / ${fmtNum(s.poster)}</td>
+            <td class="mono faint nowrap">${fmtTime(j.finished_at)}</td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="9" class="empty">暂无任务</td></tr>';
+
+    renderScSources(state.scSources);
+}
+
+function renderScProgress(p, queued) {
+    const box = $('#sc-progress');
+    if (!p.running) { box.innerHTML = `<div class="faint">空闲${queued ? `，排队 ${queued} 个专区` : ''}</div>`; return; }
+    const percent = pct(p.done, p.total);
+    box.innerHTML = `
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px">
+            <span class="tag tag-accent"><span class="dot pulse"></span>${esc(p.cancelling ? '正在停止' : p.stage)}</span>
+            <b>${esc(p.category)}</b>
+            <span class="faint" style="font-size:12px">${p.total ? `${fmtNum(p.done)} / ${fmtNum(p.total)}` : ''}${p.eta_s ? ` · 预计还需 ${fmtDuration(p.eta_s)}` : ''}</span>
+        </div>
+        <div class="meter-track"><div class="meter-fill" style="width:${p.total ? percent : 3}%"></div></div>
+        <div class="faint" style="font-size:12px;margin-top:8px">
+            成功 ${fmtNum(p.matched)} · 待确认 ${fmtNum(p.low_confidence)} · 未找到 ${fmtNum(p.not_found)} · 出错 ${fmtNum(p.error)} · 写入 NFO ${fmtNum(p.nfo)} / 海报 ${fmtNum(p.poster)} · 已完整跳过 ${fmtNum(p.skipped)}
+        </div>
+        ${p.current ? `<div class="sc-file faint" style="margin-top:4px">${esc(p.current)}</div>` : ''}`;
+}
+
+function renderScSources(list) {
+    $('#sc-sources').innerHTML = list.length ? list.map(s => {
+        const h = s.health || {};
+        const health = h.cooling
+            ? `<span class="tag tag-danger" title="${esc(h.last_error)}">熔断 ${fmtDuration(h.cooldown_left_s)}</span>`
+            : h.consecutive_failures ? '<span class="tag tag-warn">不稳定</span>'
+            : h.requests ? '<span class="tag tag-ok">正常</span>' : '<span class="tag">未使用</span>';
+        return `<tr>
+            <td><b>${esc(s.label)}</b> <span class="faint mono" style="font-size:12px">${esc(s.name)}</span>${s.note ? `<div class="sc-sub">${esc(s.note)}</div>` : ''}</td>
+            <td>${(s.kinds || []).map(k => `<span class="tag">${esc(KIND_LABELS[k] || k)}</span>`).join(' ')}</td>
+            <td>${health}</td>
+            <td class="num">${fmtNum(h.requests)} / ${fmtNum(h.failures)}${h.cache_hits ? `<div class="sc-sub">缓存命中 ${fmtNum(h.cache_hits)}</div>` : ''}</td>
+            <td><div class="sc-msg" title="${esc(h.last_error)}">${esc(h.last_error || '')}</div></td>
+            <td class="num"><label class="switch"><input type="checkbox" data-sc-source="${esc(s.name)}" ${s.enabled ? 'checked' : ''}><span></span></label></td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="6" class="empty">无</td></tr>';
+}
+
+async function loadScraperItems() {
+    try {
+        const res = await api('/api/scraper/items', { query: { status: state.scStatus, q: state.scQuery, offset: state.scOffset, limit: state.scLimit } });
+        state.scItems = res.items || [];
+        renderScItems(res.total || 0);
+    } catch (e) { $('#sc-items').innerHTML = `<tr><td colspan="6" class="empty">加载失败：${esc(e.message)}</td></tr>`; }
+}
+
+function renderScItems(total) {
+    const rows = state.scItems;
+    $('#sc-items').innerHTML = rows.length ? rows.map((r, i) => {
+        const slash = r.path.lastIndexOf('/');
+        const dir = slash > 0 ? r.path.slice(0, slash) : '';
+        const name = r.path.slice(slash + 1).replace(/\.strm$/i, '');
+        const best = (r.candidates || [])[0];
+        const detail = r.status === 'matched'
+            ? `<div>${esc(r.title)}</div><div class="sc-sub">${esc(r.source)}</div>`
+            : `<div class="sc-msg" title="${esc(r.message)}">${esc(r.message || '')}</div>${best ? `<div class="sc-sub">最佳候选：${esc(best.title || best.number)}（${esc(best.source)}）</div>` : ''}`;
+        const ignoreBtn = r.status === 'ignored'
+            ? `<button class="btn btn-sm btn-ghost" data-action="sc-unignore" data-idx="${i}">恢复</button>`
+            : r.status !== 'matched' ? `<button class="btn btn-sm btn-ghost" data-action="sc-ignore" data-idx="${i}" title="不再自动刮削此条目">忽略</button>` : '';
+        return `<tr>
+            <td><div class="sc-file">${esc(name)}</div><div class="sc-sub">${esc(dir)}</div></td>
+            <td>${identText(r.info)}</td>
+            <td>${statusTag(SC_STATUS, r.status)}${detail}</td>
+            <td class="num">${r.score ? Number(r.score).toFixed(2) : '—'}</td>
+            <td class="mono faint nowrap" style="font-size:12px">${fmtTime(r.updated_at)}</td>
+            <td class="actions">
+                <button class="btn btn-sm ${r.status === 'low_confidence' ? 'btn-primary' : ''}" data-action="sc-match" data-idx="${i}">手动匹配</button>
+                ${r.status !== 'ignored' ? `<button class="btn btn-sm" data-action="sc-retry" data-idx="${i}" title="立即重新刮削此条目">重试</button>` : ''}
+                ${ignoreBtn}
+            </td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="6" class="empty">${state.scQuery ? '没有匹配的条目' : '暂无条目'}</td></tr>`;
+
+    const from = total ? state.scOffset + 1 : 0;
+    const to = Math.min(total, state.scOffset + state.scLimit);
+    $('#sc-pager').innerHTML = `
+        <span>${fmtNum(from)}–${fmtNum(to)} / 共 ${fmtNum(total)} 条</span>
+        <button class="btn btn-sm" data-action="sc-page" data-dir="-1" ${state.scOffset <= 0 ? 'disabled' : ''}>上一页</button>
+        <button class="btn btn-sm" data-action="sc-page" data-dir="1" ${to >= total ? 'disabled' : ''}>下一页</button>`;
+}
+
+async function retryScrapeItem(item, button) {
+    await withBusy(button, async () => {
+        try {
+            const res = await api('/api/scraper/retry', { method: 'POST', body: { path: item.path } });
+            toast(res.status === 'matched' ? `已匹配：${(res.meta && res.meta.title) || ''}` : `${SC_STATUS[res.status] ? SC_STATUS[res.status][1] : res.status}：${res.message || ''}`, res.status === 'matched' ? 'ok' : 'warn', 5000);
+            await Promise.all([loadScraperItems(), loadScraperStatus()]);
+        } catch (e) { toast(`重试失败：${e.message}`, 'error'); }
+    });
+}
+
+async function ignoreScrapeItem(item, ignored, button) {
+    await withBusy(button, async () => {
+        try {
+            await api('/api/scraper/items/ignore', { method: 'POST', body: { paths: [item.path], ignored } });
+            toast(ignored ? '已忽略，之后的刮削任务会跳过它' : '已恢复，下次刮削任务会重新处理', 'ok');
+            await Promise.all([loadScraperItems(), loadScraperStatus()]);
+        } catch (e) { toast(`操作失败：${e.message}`, 'error'); }
+    });
+}
+
+// ---------- 刮削设置 ----------
+const SC_FIELDS = {
+    'sc-overwrite': ['overwrite', 'value'],
+    'sc-min-score': ['min_score', 'number'],
+    'sc-translate': ['translate', 'value'],
+    'sc-max-sources': ['max_sources', 'number'],
+    'sc-interval': ['request_interval', 'number'],
+    'sc-retry-days': ['retry_failed_days', 'number'],
+    'sc-cache-days': ['cache_days', 'number'],
+    'sc-crop': ['crop_poster', 'checkbox'],
+    'sc-fanart': ['write_fanart', 'checkbox'],
+    'sc-title-num': ['title_with_number', 'checkbox'],
+};
+
+async function loadScraperSettings() {
+    try {
+        const res = await api('/api/scraper/settings');
+        state.scSettings = res.settings;
+        Object.entries(SC_FIELDS).forEach(([id, [key, type]]) => {
+            const el = document.getElementById(id);
+            if (type === 'checkbox') el.checked = !!res.settings[key];
+            else el.value = res.settings[key];
+        });
+    } catch (e) { toast(`读取刮削设置失败：${e.message}`, 'error'); }
+}
+
+async function saveScraperSettings(patch, button) {
+    const run = async () => {
+        try {
+            const res = await api('/api/scraper/settings', { method: 'POST', body: { settings: patch } });
+            state.scSettings = res.settings;
+            toast('刮削设置已保存', 'ok');
+            if (!button) loadScraperStatus();
+        } catch (e) { toast(`保存失败：${e.message}`, 'error'); }
+    };
+    return button ? withBusy(button, run) : run();
+}
+
+function collectScraperSettings() {
+    const out = {};
+    Object.entries(SC_FIELDS).forEach(([id, [key, type]]) => {
+        const el = document.getElementById(id);
+        if (type === 'checkbox') out[key] = el.checked;
+        else if (type === 'number') { const n = Number(el.value); if (el.value !== '' && Number.isFinite(n)) out[key] = n; }
+        else out[key] = el.value;
+    });
+    return out;
+}
+
+// ---------- 手动匹配 ----------
+async function openMatch(item) {
+    const dlg = $('#dlg-match');
+    state.match = { path: item.path, candidates: [], minScore: (state.scSettings && state.scSettings.min_score) || 0.6 };
+    $('#mt-file').textContent = item.path;
+    $('#mt-ident').innerHTML = `${identText(item.info)} ${statusTag(SC_STATUS, item.status)}`;
+    $('#mt-error').textContent = item.message && item.status !== 'matched' ? item.message : '';
+    const info = item.info || {};
+    $('#mt-query').value = info.kind === 'western' ? [info.site, info.title_hint].filter(Boolean).join(' ') : (info.number || info.raw || '');
+    $('#mt-source').innerHTML = '<option value="">全部站点</option>' + (state.scSources || [])
+        .filter(s => s.enabled).map(s => `<option value="${esc(s.name)}">${esc(s.label)}</option>`).join('');
+    dlg.showModal();
+    try {
+        const res = await api('/api/scraper/item', { query: { path: item.path } });
+        const cands = (res.record && res.record.candidates) || [];
+        if (cands.length) renderMatchCandidates(cands);
+        else await searchMatch();
+    } catch (e) { $('#mt-error').textContent = e.message; }
+}
+
+function renderMatchCandidates(list) {
+    state.match.candidates = list;
+    const min = state.match.minScore;
+    $('#mt-cands').innerHTML = list.length ? list.map((c, i) => {
+        const img = c.poster_url || c.cover_url || c.fanart_url;
+        const actors = (c.actors || []).slice(0, 4).map(a => a.name).join('、');
+        const meta = [c.number, c.premiered, c.studio, actors, c.runtime ? `${c.runtime} 分钟` : ''].filter(Boolean).join(' · ');
+        const scoreCls = c.score >= min ? 'tag-ok' : c.score >= 0.4 ? 'tag-warn' : '';
+        return `<div class="cand ${c.score >= min ? 'good' : ''}">
+            ${img ? `<img class="cand-img" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<div class="cand-img"></div>'}
+            <div style="min-width:0">
+                <div class="cand-title">${esc(c.title || c.original_title || '（无标题）')}</div>
+                <div class="cand-meta">${esc(meta)}</div>
+                ${c.plot ? `<div class="cand-meta faint">${esc(c.plot.slice(0, 120))}</div>` : ''}
+            </div>
+            <div class="cand-side">
+                <span class="tag ${scoreCls}" title="与文件名识别结果的匹配置信度">置信度 ${Number(c.score || 0).toFixed(2)}</span>
+                <span class="faint" style="font-size:12px">${esc(c.source)}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noreferrer noopener">详情</a>` : ''}</span>
+                <button class="btn btn-sm btn-primary" data-action="mt-use" data-idx="${i}">使用此结果</button>
+            </div>
+        </div>`;
+    }).join('') : '<div class="empty">没有找到候选，换个番号或关键词试试</div>';
+}
+
+async function searchMatch() {
+    const body = { path: state.match.path, query: $('#mt-query').value.trim(), source: $('#mt-source').value };
+    $('#mt-error').textContent = '';
+    $('#mt-cands').innerHTML = '<div class="empty">搜索中…</div>';
+    await withBusy($('#mt-search'), async () => {
+        try {
+            const res = await api('/api/scraper/search', { method: 'POST', body });
+            state.match.minScore = res.min_score || state.match.minScore;
+            renderMatchCandidates(res.candidates || []);
+            if (res.message) $('#mt-error').textContent = res.message;
+        } catch (e) { $('#mt-cands').innerHTML = ''; $('#mt-error').textContent = e.message; }
+    });
+}
+
+async function applyMatch(body, button) {
+    await withBusy(button, async () => {
+        try {
+            const res = await api('/api/scraper/apply', { method: 'POST', body: { path: state.match.path, ...body } });
+            if (res.status === 'matched') {
+                const written = Object.entries(res.written || {}).filter(([, v]) => v).map(([k]) => k).join('、');
+                toast(`已写入：${(res.meta && res.meta.title) || ''}${written ? `（${written}）` : ''}`, 'ok', 5000);
+                $('#dlg-match').close();
+                await Promise.all([loadScraperItems(), loadScraperStatus()]);
+            } else {
+                $('#mt-error').textContent = res.message || '没有找到匹配结果';
+                if (res.candidates && res.candidates.length) renderMatchCandidates(res.candidates);
+            }
+        } catch (e) { $('#mt-error').textContent = e.message; }
+    });
 }
 
 async function cleanCategory(category, button) {
@@ -1151,7 +1697,7 @@ async function cleanCategory(category, button) {
         try {
             const res = await api('/api/categories/clean_orphan', { method: 'POST', query: { category } });
             const r = res.result || {};
-            toast(r.total ? `已删除 ${r.total} 个孤立文件（NFO ${r.deleted_nfo}，海报 ${r.deleted_posters}，缩略图 ${r.deleted_thumbs}）` : '没有需要清理的孤立文件', 'ok', 6000);
+            toast(r.total ? `已删除 ${r.total} 个孤立文件（NFO ${r.deleted_nfo}，海报 ${r.deleted_posters}，缩略图 ${r.deleted_thumbs}，fanart ${r.deleted_fanarts || 0}）` : '没有需要清理的孤立文件', 'ok', 6000);
             loadCategories();
         } catch (e) { toast(`清理失败：${e.message}`, 'error'); }
     });
@@ -1320,6 +1866,37 @@ document.addEventListener('click', e => {
         case 'cat-dequeue': dequeue(cat, el); break;
         case 'bulk-gov': bulkGovern(el); break;
         case 'bulk-clear': state.selected.clear(); renderCategories(); break;
+        case 'sc-cancel':
+            withBusy(el, () => api('/api/scraper/cancel', { method: 'POST', body: { clear_queue: false } }))
+                .then(() => { toast('正在停止当前刮削任务（处理完当前条目后停止）', 'ok'); pollStatus(); })
+                .catch(err => toast(`操作失败：${err.message}`, 'error'));
+            break;
+        case 'sc-clear-queue':
+            withBusy(el, () => api('/api/scraper/cancel', { method: 'POST', body: { clear_queue: true } }))
+                .then(res => { toast(`已移除 ${res.cleared} 个排队任务`, 'ok'); loadScraperStatus(); pollStatus(); })
+                .catch(err => toast(`操作失败：${err.message}`, 'error'));
+            break;
+        case 'sc-refresh': withBusy(el, () => Promise.all([loadScraperItems(), loadScraperStatus()])); break;
+        case 'sc-page':
+            state.scOffset = Math.max(0, state.scOffset + Number(el.dataset.dir) * state.scLimit);
+            loadScraperItems();
+            break;
+        case 'sc-match': openMatch(state.scItems[Number(el.dataset.idx)]); break;
+        case 'sc-retry': retryScrapeItem(state.scItems[Number(el.dataset.idx)], el); break;
+        case 'sc-ignore': ignoreScrapeItem(state.scItems[Number(el.dataset.idx)], true, el); break;
+        case 'sc-unignore': ignoreScrapeItem(state.scItems[Number(el.dataset.idx)], false, el); break;
+        case 'sc-health-reset':
+            withBusy(el, () => api('/api/scraper/health/reset', { method: 'POST' }))
+                .then(() => { toast('已解除所有站点的熔断', 'ok'); loadScraperStatus(); })
+                .catch(err => toast(`操作失败：${err.message}`, 'error'));
+            break;
+        case 'sc-cache-clear':
+            withBusy(el, () => api('/api/scraper/cache/clear', { method: 'POST' }))
+                .then(res => toast(`已清空 ${fmtNum(res.removed)} 个缓存页面`, 'ok'))
+                .catch(err => toast(`操作失败：${err.message}`, 'error'));
+            break;
+        case 'sc-settings-save': saveScraperSettings(collectScraperSettings(), el); break;
+        case 'mt-use': applyMatch({ candidate: state.match.candidates[Number(el.dataset.idx)] }, el); break;
         case 'log-bottom': renderLogs(true); break;
         case 'settings-save': saveSettings(el); break;
         case 'settings-reset': if (state.config) fillSettings(state.config); break;
@@ -1338,6 +1915,31 @@ document.addEventListener('click', e => {
 
 $$('[data-close]').forEach(btn => btn.addEventListener('click', () => document.getElementById(btn.dataset.close).close()));
 $('#rule-form').addEventListener('submit', submitRule);
+$('#scrape-job-form').addEventListener('submit', submitScrapeJob);
+$('#mt-form').addEventListener('submit', e => { e.preventDefault(); searchMatch(); });
+$('#mt-apply-number').addEventListener('click', e => {
+    const number = $('#mt-query').value.trim();
+    if (!number) { $('#mt-error').textContent = '请先输入番号'; return; }
+    applyMatch({ number }, e.currentTarget);
+});
+$('#sc-filters').addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.scStatus = chip.dataset.scStatus;
+    state.scOffset = 0;
+    $$('#sc-filters .chip').forEach(c => c.classList.toggle('active', c === chip));
+    loadScraperItems();
+});
+let scSearchTimer = null;
+$('#sc-search').addEventListener('input', e => {
+    clearTimeout(scSearchTimer);
+    scSearchTimer = setTimeout(() => { state.scQuery = e.target.value.trim(); state.scOffset = 0; loadScraperItems(); }, 300);
+});
+$('#sc-sources').addEventListener('change', e => {
+    const name = e.target.dataset.scSource;
+    if (!name) return;
+    saveScraperSettings({ sources: { ...((state.scSettings && state.scSettings.sources) || {}), [name]: e.target.checked } });
+});
 
 $('#speed-select').addEventListener('change', async e => {
     const delay = e.target.value;

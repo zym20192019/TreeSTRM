@@ -18,7 +18,7 @@
 | **大批量删除 STRM 会被熔断** | 单次待删 ≥ 500 且占本地 > 30% 时跳过清理并在日志报 `🛑 安全熔断`。确需大批量清理时临时调高 `engine/reconciler.py` 中 `ORPHAN_GUARD_MIN_COUNT` / `ORPHAN_GUARD_MAX_RATIO`。 |
 | **日志真正只保留 7 天** | 以前清理函数从未被调用，`data/logs/` 会无限增长；升级后首条日志即清理 7 天前文件。 |
 | **前端完全重写** | 见第三节「UI 重写」。无外部 CDN 依赖，内网 / 断网可用。 |
-| **TPDB / Telegram 改为页面配置** | 新增 `config.json` 字段 `tpdb_base`、`tpdb_token`、`telegram_bot_token`、`telegram_chat_id`，在「系统设置」页填写。`tpdb_token` 留空时继续使用 `scraper_service.py` 内置 Token，刮削行为不变。旧代码的 Telegram Bot Token 为空字符串，从未真正推送过；如需启用，在设置页填 Bot Token 与 Chat ID（旧代码中的 Chat ID 为 `5662349315`）。 |
+| **TPDB / Telegram 改为页面配置** | 新增 `config.json` 字段 `tpdb_base`、`tpdb_token`、`telegram_bot_token`、`telegram_chat_id`，在「系统设置」页填写。`tpdb_token` 留空时继续使用 `scraper/sources/tpdb.py` 内置 Token，刮削行为不变。旧代码的 Telegram Bot Token 为空字符串，从未真正推送过；如需启用，在设置页填 Bot Token 与 Chat ID（旧代码中的 Chat ID 为 `5662349315`）。 |
 | **保存设置不再改动任务与加锁列表** | `POST /api/config` 只更新全局设置，`rules` / `protected_categories` 由各自接口维护；未提交的可选字段保持原值；自动同步间隔最小 5 分钟。 |
 
 ## 三、变更明细
@@ -59,10 +59,42 @@
 - 提交导出任务读取超时 20 → 60 秒，超时/连接错误计入重试（10 次）；下载直链与目录树文件下载失败自动重试 3 次。
 - 提交成功后每 30 秒查询一次生成状态，最长等待 30 分钟（原为每 2 秒查询、最长 4 分钟，十万级文件目录树来不及生成）。可调 `services/cloud115.py` 中 `POLL_INTERVAL` / `POLL_MAX_WAIT`。
 
+### 官方刮削独立为 `scraper/` 模块
+旧 `scraper_service.py` 已删除，由仓库内独立包 `scraper/` 取代（`app.py` 只负责挂载路由与回调）。
+
+**结构**：`identify`（文件名 → 类型 + 番号）→ `sources/`（各站点解析器，按类型的优先级链）→ `merge`（置信度打分 + 多源字段合并）→ `output`（海报裁剪、NFO）→ `store`（sqlite 记录每条结果）→ `runner`（任务队列、断点续跑）→ `api`。
+
+**修掉的旧问题**
+1. JavDB 直接取搜索结果第一条，番号不对也写入 → 逐条核对番号。
+2. FC2 官方页标题里混有隐藏的反爬字符 → 按可见文本提取；「找不到商品」页按专用标记识别。
+3. 一本道番号 `010120_001` 被 `_\d+$` 规则截断 → 识别规则重写；且 `010120-001`（加勒比）与 `010120_001`（一本道）不再互相串号。
+4. TPDB 站点名模糊匹配，Blacked Raw 被并入 Blacked → 站点名精确匹配，按日期 + 站点查询，日期不符的候选置信度封顶 0.5。
+5. JavBus 横版封套直接当海报 → 默认裁右侧竖版海报（可关）。
+6. MGS 素人番号带数字前缀（`259LUXU-1500`）各站搜不到 → 自动尝试去前缀别名。
+7. 删除未使用的 `STATE_FILE`、AI 代码等死代码。
+
+**新能力**
+- **多源合并 + 置信度**：每部最多合并 `max_sources` 个站点（默认 3）；低于 `min_score`（默认 0.6）不落盘，进入「待确认」。
+- **更全的输出**：NFO 包含标题/原标题、简介、演员（带头像）、类型、系列、片商、发行日期、评分、uniqueid 等，并带 `<scraper>TreeSTRM-Scraper</scraper>` 标记；保留已有 NFO 中的 `fileinfo` / 时长；新增 `-fanart.jpg`、`-thumb.jpg`；可选 AI 翻译标题/简介（复用「AI 治理」接口配置）。
+- **覆盖策略**：`missing` 只补缺失文件（默认）；`replace_ai` 覆盖 AI 生成的 NFO，保留其他刮削器 NFO；`all` 全部覆盖（前端二次确认）。
+- **失败处理与手动修正**：结果页按 待确认 / 未找到 / 出错 / 已匹配 / 已忽略 分类；可手动搜索候选（显示图片与置信度）、按番号重刮、忽略；手动结果会记住，后续重跑沿用。失败条目 `retry_failed_days` 天内不自动重试。
+- **稳定性**：每个域名限速（`request_interval`）；连续失败 3 次熔断 10 分钟，再失败翻倍，最长 2 小时；页面磁盘缓存 `cache_days` 天；任务队列存 sqlite，服务重启后自动续跑；所有写文件均为原子写。
+- **前端**：侧栏新增「官方刮削」页：统计、任务进度与历史、结果表（搜索 / 分页）、站点健康与启用开关、刮削设置。专区页「官方刮削」按钮改为弹出任务选项。
+
+**部署相关**
+- 新数据：`/opt/treestrm/data/scraper/scraper.db`（sqlite，WAL）与 `/opt/treestrm/data/scraper/cache/`（页面缓存，可在页面「清空页面缓存」）。首次启动自动创建。
+- 新配置：`config.json` 的 `scraper` 段（页面「刮削设置」写入，缺省时用默认值）：`sources`、`min_score`、`overwrite`、`write_fanart`、`crop_poster`、`title_with_number`、`translate`、`request_interval`、`cache_days`、`retry_failed_days`、`max_sources`。
+- 依赖：`requests`、`beautifulsoup4`（原有）；`Pillow` **可选**，用于裁剪海报，没有时回退 `ffmpeg`，再没有就直接用原图。
+- 新接口（均需 `X-Access-Token`）：`/api/scraper/jobs`、`status`、`cancel`、`items`、`item`、`search`、`apply`、`retry`、`items/ignore`、`settings`、`cache/clear`、`health/reset`。
+- 兼容：`POST /api/categories/scrape_official` 保留，变为「加入刮削队列」的别名，立即返回。`/api/status` 新增 `scraper` 字段。
+- 清理失效（`engine/cleaner.py`）现在也删除孤立的 `-fanart.jpg`，返回 `deleted_fanarts`。
+
 ## 四、已知限制
 
 1. 专区治理（`/api/categories`）只覆盖 `<default_output>/成人` 下的子目录；其他对账任务只做 STRM 对账。
-2. `scraper_service.py` 中保留了内置 TPDB Token 作为回退值（所有者已知悉）。
+2. `scraper/sources/tpdb.py` 中保留了内置 TPDB Token 作为回退值（所有者已知悉）。
+3. 刮削站点中 MGStage / Prestige / FALENO 仅日本 IP 可访问；fc2ppvdb（526）、fc2club（401）、AVSOX（SSL 错误）、Getchu 在开发环境未能实测，解析器按页面结构编写，**部署后需在服务器上实测**。连续失败会自动熔断，不影响其他站点。
+4. 一本道系（1Pondo / 10musume / Pacopacomama）与 HEYZO 官方只提供横版图，海报为横版。
 
 ## 五、升级后验证
 
@@ -73,3 +105,4 @@
 5. 跑一次全量对账：进度条正常推进，STRM 新增 / 清理数量合理，无「安全熔断」误报；结束后任务卡片的「上次对账」时间更新。
 6. 对含中文文件名的专区「查漏补缺」一次（勾选「同时补充音视频流信息」），确认日志出现「[深度补流] … 成功补全流信息」。
 7. 对专区执行一次「清理失效」，确认 toast 显示删除数量，清理日志出现在运行日志页。
+8. 官方刮削：先用小专区、「只补缺失」、最多 20 部跑一次；在「官方刮削」页确认任务完成、已匹配条目的 NFO / 海报写入、Emby 刷新；查看「数据源」表中各站点请求 / 失败数，对第四节第 3 条列出的未实测站点重点核对，持续失败的可在页面关闭。

@@ -15,7 +15,7 @@ TreeSTRM（运行于 `/opt/treestrm`，端口 `:8028`）在当前的生产运行
 ## 二、 核心瓶颈与优化空间分析
 
 ### 1. 代码架构单一膨胀 (Codebase Decoupling)
-- **现状**：`app.py` 已经累积超过 1400 行代码，杂糅了 FastAPI 路由定义、115 API 交互、CD2 抽帧、后台 Worker 线程、NFO 生成模板与全局内存状态字典；`scraper_service.py` 承载了 24 站爬虫逻辑。
+- **现状**：`app.py` 已经累积超过 1400 行代码，杂糅了 FastAPI 路由定义、115 API 交互、CD2 抽帧、后台 Worker 线程、NFO 生成模板与全局内存状态字典；`scraper_service.py` 承载了 24 站爬虫逻辑（已拆分为独立包 `scraper/`，见 UPGRADE_NOTES.md）。
 - **隐患**：局部功能修改或增加新站点容易牵一发动全身，单元测试与排障定位成本高。
 
 ### 2. 状态机与任务队列持久化 (State & Queue Reliability)
