@@ -34,6 +34,9 @@ def create_115_session(cookie_str: str) -> requests.Session:
 # (连接超时, 读取超时)：大目录（数十万文件）提交导出时 115 响应可能超过 20 秒
 SUBMIT_TIMEOUT = (10, 60)
 SUBMIT_RETRIES = 10
+# 提交成功后轮询生成状态：十万级文件的目录树生成需要数分钟
+POLL_INTERVAL = 30
+POLL_MAX_WAIT = 30 * 60
 
 def _get_with_retry(session: requests.Session, url: str, timeout, attempts: int = 3) -> requests.Response:
     for attempt in range(1, attempts + 1):
@@ -76,10 +79,12 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
         time.sleep(3)
         
     pick_code = None
-    push_log("正在轮询等待 115 服务端生成大树文件...")
-    
-    for i in range(120):
-        time.sleep(2)
+    push_log(f"正在等待 115 服务端生成目录树（每 {POLL_INTERVAL} 秒查询一次，最长等待 {POLL_MAX_WAIT // 60} 分钟）...")
+
+    waited = 0
+    while waited < POLL_MAX_WAIT:
+        time.sleep(POLL_INTERVAL)
+        waited += POLL_INTERVAL
         if export_id:
             try:
                 st_res = session.get(f'https://webapi.115.com/files/export_dir?export_id={export_id}', timeout=15).json()
@@ -112,11 +117,10 @@ def export_115_tree(cookie: str, cid: str = "0", layer_limit: int = 25) -> str:
             except Exception:
                 pass
 
-        if i > 0 and i % 5 == 0:
-            push_log(f"等待 115 服务端处理中... 已耗时 {i*2} 秒")
-            
+        push_log(f"等待 115 服务端生成目录树中... 已等待 {waited // 60} 分 {waited % 60} 秒")
+
     if not pick_code:
-        raise TimeoutError("等待 115 目录树生成超时")
+        raise TimeoutError(f"等待 115 目录树生成超时（已等待 {POLL_MAX_WAIT // 60} 分钟）")
         
     dl_res = _get_with_retry(session, f'https://webapi.115.com/files/download?pickcode={pick_code}', timeout=(10, 30)).json()
     dl_url = dl_res.get('file_url') or (dl_res.get('data') or {}).get('file_url')
