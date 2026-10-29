@@ -358,43 +358,70 @@ def _summarize_stderr(stderr: str, max_lines: int = 4) -> str:
     return " / ".join(lines[-max_lines:])[:300]
 
 
-# 这些错误说明读到的数据有问题，值得换 HTTP 直链再试一次以区分「CD2 读坏」与「文件本身损坏」
 NO_VIDEO_MARK = "CD2 探针解析出的流中没有视频流"
-_DATA_ERRORS = ("Invalid data found", "Error parsing OBU", "Invalid repeated frame header",
-                "Input/output error", "Connection", "Operation timed out",
-                "does not contain any stream", NO_VIDEO_MARK)
+# 读取 / 容器层面的错误：可能是 CD2 临时读坏，值得换 HTTP 直链再试一次
+# （142 实测 CD2 与直链读到的字节一致，解码层面的错误换直链无意义，不在此列）
+_IO_ERRORS = ("Input/output error", "Connection", "Operation timed out", "moov atom not found",
+              "Error opening input", "does not contain any stream", NO_VIDEO_MARK)
+# 码流本身非法：换位置 / 换通道都解不出来，判定为文件损坏
+_BITSTREAM_ERRORS = ("Error parsing OBU", "Invalid repeated frame header", "Error parsing frame header",
+                     "zero_bit out of range", "Failed to parse temporal unit")
+CORRUPT_MARK = "文件本身很可能已损坏"
+
+# 每次抽帧最多读取的片源时长（秒）：坏文件逐包报错时 ffmpeg 会一直读到文件末尾，
+# CD2 冷读仅约 0.7MB/s，不加限制一个 8K 坏文件要从 115 拉取整个文件
+GRAB_READ_LIMIT = 15
+# 输出 JPEG 每像素字节数低于此值视为黑场 / 近纯色画面（片头淡入常见），换位置重抽
+DARK_BYTES_PER_PIXEL = 0.02
+# 直链复核前的间隔（秒），与 115 单 Cookie 流控底线一致
+HTTP_FALLBACK_DELAY = 2.0
 
 
-def _grab_frame(src: str, poster_path: str, seek: int, max_threads: int, timeout: int,
+def _grab_frame(src: str, out_path: str, seek: int, max_threads: int, timeout: int,
                 key_only: bool = True) -> Tuple[bool, str]:
-    """抽一帧写入 poster_path（先写临时文件再替换），返回 (成功, 错误摘要)"""
-    tmp = poster_path + ".part.jpg"
+    """抽一帧写入 out_path，返回 (成功, 错误摘要)"""
     cmd = ['nice', '-n', '15', 'ionice', '-c', '3',
            'ffmpeg', '-hide_banner', '-nostdin', '-v', 'error', '-y',
            '-threads', str(max_threads)]
     if key_only:
-        # 只解码关键帧：8K/高码率下避免解码整个 GOP，也避开 HEVC 开放 GOP 的不可独立解码帧
-        cmd += ['-skip_frame', 'nokey']
-    # -copyts：seek 点之后已无关键帧时，ffmpeg 会把落点前的关键帧当作早于起点丢弃导致无输出，保留原时间戳可避免
-    cmd += ['-ss', time.strftime('%H:%M:%S', time.gmtime(seek)), '-noaccurate_seek', '-copyts',
-            '-i', src, '-an', '-sn', '-dn',
+        # 只解码关键帧：输出 seek 落点所在的关键帧，最快；
+        # -copyts 防止 seek 点后已无关键帧时落点关键帧被当作早于起点丢弃
+        cmd += ['-skip_frame', 'nokey', '-ss', time.strftime('%H:%M:%S', time.gmtime(seek)),
+                '-noaccurate_seek', '-copyts']
+    else:
+        # 全帧：从落点关键帧解码到目标时间点附近，画面更贴近 seek 位置
+        cmd += ['-ss', time.strftime('%H:%M:%S', time.gmtime(seek)), '-noaccurate_seek']
+    cmd += ['-t', str(GRAB_READ_LIMIT), '-i', src, '-an', '-sn', '-dn',
             '-frames:v', '1',
             '-vf', 'scale=w=min(1080\\,iw):h=-2',
-            '-q:v', '3', tmp]
+            '-q:v', '3', out_path]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
-            os.replace(tmp, poster_path)
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
             return True, ""
         return False, _summarize_stderr(res.stderr) or f"返回码 {res.returncode}，未输出画面"
     except subprocess.TimeoutExpired:
         return False, f"超时 {timeout}s"
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+
+
+def _looks_dark(size: int, video: Dict) -> bool:
+    """按输出尺寸估算 JPEG 体积，过小说明是黑场或近纯色画面"""
+    w = int(video.get("width") or 0)
+    h = int(video.get("height") or 0)
+    if w > 0 and h > 0:
+        out_w = min(1080, w)
+        pixels = out_w * (h * out_w / w)
+    else:
+        pixels = 1080 * 1080
+    return size < pixels * DARK_BYTES_PER_PIXEL
+
+
+def _remove_quiet(path: str):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 
 def extract_cover_by_cd2(
@@ -481,32 +508,73 @@ def extract_cover_by_cd2(
             diagnostic["detail"] = "服务器 ffmpeg 未编译 libdav1d，无法解码 AV1（8K 片源常见），请安装带 libdav1d 的 ffmpeg"
             return False
 
-        # 3. 降权抽帧：只解码关键帧；8K / 超高码率放宽超时
+        # 3. 降权抽帧；8K / 超高码率放宽超时
         grab_timeout = max(timeout_sec, HEAVY_TIMEOUT) if heavy else timeout_sec
-        # 依次：目标点关键帧 → 片头关键帧 → 片头不限关键帧（个别文件关键帧标记不正确）
-        attempts = [(target_seek, True)] + ([(0, True)] if target_seek > 0 else []) + [(0, False)]
+        # 依次：目标点关键帧（最快）→ 目标点全帧（关键帧是片头黑场时）→ 片头全帧（关键帧标记异常时）
+        attempts = [(target_seek, True), (target_seek, False)] + ([(0, False)] if target_seek > 0 else [])
         errors = [f"{NO_VIDEO_MARK}"] if no_video else []
-        ok = False
-        for seek, key_only in ([] if no_video else attempts):
-            ok, err = _grab_frame(host_target, poster_path, seek, max_threads, grab_timeout, key_only)
-            if ok:
+        tries = []          # (路径, 大小)：画面过暗时先留着，全部尝试后取最大的
+        chosen = None
+        for i, (seek, key_only) in enumerate([] if no_video else attempts):
+            out = f"{poster_path}.try{i}.jpg"
+            tries.append(out)
+            got, err = _grab_frame(host_target, out, seek, max_threads, grab_timeout, key_only)
+            label = f"seek={seek}s{'' if key_only else '(全帧)'}"
+            if got:
+                if not _looks_dark(os.path.getsize(out), v):
+                    chosen = out
+                    break
+                errors.append(f"{label}: 画面过暗/近纯色，换位置重抽")
+                continue
+            errors.append(f"{label}: {err}")
+            if any(k in err for k in _BITSTREAM_ERRORS):
+                # 码流非法：只在片头再确认一次，避免对坏文件反复整段读取
+                if seek > 0 or key_only:
+                    out0 = f"{poster_path}.try_head.jpg"
+                    tries.append(out0)
+                    got0, err0 = _grab_frame(host_target, out0, 0, max_threads, grab_timeout, False)
+                    if got0:
+                        chosen = out0
+                    else:
+                        errors.append(f"seek=0s(全帧): {err0}")
                 break
-            errors.append(f"seek={seek}s{'' if key_only else '(全帧)'}: {err}")
             # 读取超时说明 CD2 拉取过慢，再换位置重试只会叠加等待
-            if err.startswith("超时") and len(errors) >= 2:
+            if err.startswith("超时") and sum(1 for e in errors if "超时" in e) >= 2:
                 break
+        if chosen is None:
+            produced = [p for p in tries if os.path.exists(p) and os.path.getsize(p) > 1000]
+            if produced:
+                # 所有位置都偏暗：取信息量最大的一张，好过没有封面
+                chosen = max(produced, key=os.path.getsize)
         joined = " | ".join(errors)
-        if not ok and target_path.startswith(("http://", "https://")) and any(k in joined for k in _DATA_ERRORS):
-            # 经 CD2 读到的数据异常：换 STRM 直链读一次，区分「CD2 读坏」与「文件本身损坏」
-            ok, err = _grab_frame(target_path, poster_path, attempts[0][0], max_threads, grab_timeout)
-            if ok:
+        bitstream_bad = chosen is None and any(k in joined for k in _BITSTREAM_ERRORS)
+        if (chosen is None and not bitstream_bad and target_path.startswith(("http://", "https://"))
+                and any(k in joined for k in _IO_ERRORS)):
+            # 读取 / 容器层面异常：换 STRM 直链读一次，区分「CD2 临时读坏」与「文件本身损坏」
+            # 直链会向 115 申请一次下载地址，先按流控底线间隔
+            time.sleep(HTTP_FALLBACK_DELAY)
+            out = f"{poster_path}.try_http.jpg"
+            tries.append(out)
+            got, err = _grab_frame(target_path, out, attempts[0][0], max_threads, grab_timeout, False)
+            if got:
+                chosen = out
                 diagnostic["note"] = ("CD2 读到的文件不含视频流，HTTP 直链正常，已改用直链抽帧" if no_video
                                       else "CD2 读取数据异常，已改用 HTTP 直链抽帧成功")
             else:
                 errors.append(f"HTTP直链: {err}")
-                if any(k in err for k in _DATA_ERRORS):
-                    errors.insert(0, "CD2 与 HTTP 直链读到的数据都无法解码，文件本身很可能已损坏或不含视频")
+                if any(k in err for k in _IO_ERRORS + ("Invalid data found",) + _BITSTREAM_ERRORS):
+                    errors.insert(0, f"CD2 与 HTTP 直链读到的数据都无法解码，{CORRUPT_MARK}或不含视频")
+                    diagnostic["permanent"] = True
                 joined = " | ".join(errors)
+        if bitstream_bad:
+            errors.insert(0, f"视频码流非法（CD2 与直链读到的字节一致，已排除读取问题），{CORRUPT_MARK}")
+            joined = " | ".join(errors)
+            diagnostic["permanent"] = True
+        ok = chosen is not None
+        if ok:
+            os.replace(chosen, poster_path)
+        for p in tries:
+            _remove_quiet(p)
         if not ok:
             diagnostic["reason"] = "FFmpeg 抽帧超时" if all("超时" in e for e in errors) else "FFmpeg 抽帧失败"
             probe_note = f"{diagnostic['probe_note']}，按 60 秒兜底；" if diagnostic.get("probe_note") else ""

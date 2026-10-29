@@ -16,6 +16,40 @@ from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
 
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
+# 抽封面确认损坏的文件：期限内治理直接跳过，避免每轮都从 115 重复拉取（流控）
+COVER_FAILURE_FILE = os.path.join(DATA_DIR, "cover_failures.json")
+COVER_FAILURE_SKIP_DAYS = 30
+_cover_failure_lock = threading.Lock()
+
+
+def _load_cover_failures() -> Dict[str, dict]:
+    try:
+        with open(COVER_FAILURE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _update_cover_failure(target: str, entry: Optional[dict]):
+    """entry 为 None 时移除记录（抽帧已成功）"""
+    with _cover_failure_lock:
+        data = _load_cover_failures()
+        if entry is None:
+            if target not in data:
+                return
+            data.pop(target, None)
+        else:
+            data[target] = entry
+        tmp = COVER_FAILURE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, COVER_FAILURE_FILE)
+
+
+def _is_known_broken(failures: Dict[str, dict], target: str) -> bool:
+    entry = failures.get(target)
+    return bool(entry) and time.time() - float(entry.get("ts", 0)) < COVER_FAILURE_SKIP_DAYS * 86400
 
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -561,6 +595,8 @@ def _run_category_job(job: dict):
 
         # 先顺序极速完成 NFO 补齐与元数据准备
         work_tasks = []
+        cover_failures = _load_cover_failures()
+        skipped_broken = 0
         for it in active_items:
             if processed_count >= target_limit or gov_progress["is_paused_for_captcha"]:
                 break
@@ -618,11 +654,17 @@ def _run_category_job(job: dict):
             # 2. 判定是否需要进入 CD2 探针 / 抽封面队列
             needs_poster = extract_covers and not it["has_poster"]
             needs_probe = probe_streams and not has_streamdetails_in_nfo(it["nfo_path"])
+            if (needs_poster or needs_probe) and _is_known_broken(cover_failures, raw_target):
+                skipped_broken += 1
+                continue
             if needs_poster or needs_probe:
-                reason = "缺封面+缺流信息" if (needs_poster and needs_probe) else ("缺封面" if needs_poster else "有封面但缺流信息")
+                reason ="缺封面+缺流信息" if (needs_poster and needs_probe) else ("缺封面" if needs_poster else "有封面但缺流信息")
                 work_tasks.append((raw_target, it["poster_path"], it["thumb_path"], it["nfo_path"], video_name, needs_poster, reason))
 
-        # 3. CD2 本地通道多线程并发 Fast Seek 抽封面 + 顺带探针流信息
+        if skipped_broken:
+            push_log(f"⏭️ [跳过损坏文件] 专区【{category_name}】{skipped_broken} 个文件近 {COVER_FAILURE_SKIP_DAYS} 天内已确认码流损坏，本轮不再读取（记录见 data/cover_failures.json，删除对应条目可强制重试）")
+
+        # 3. CD2 本地通道串行 Fast Seek 抽封面 + 顺带探针流信息
         if work_tasks:
             def _extract_worker(task):
                 raw_t, p_path, th_path, nfo_p, v_name, do_poster, reason = task
@@ -634,6 +676,7 @@ def _run_category_job(job: dict):
                         # 单封面策略：只写 -poster.jpg，不生成 -thumb.jpg
                         ok = extract_cover_by_cd2(raw_t, p_path, None, nfo_path=nfo_p, diagnostic=diagnostic, cd2_mount_path=cd2_root, stream_prefix=s_prefix)
                         if ok:
+                            _update_cover_failure(raw_t, None)
                             with gov_lock:
                                 gov_progress["covers_extracted"] += 1
                                 gov_progress["recent_success_streak"] += 1
@@ -648,6 +691,9 @@ def _run_category_job(job: dict):
                             if diagnostic.get("probe_stderr"):
                                 detail += f"；stderr={diagnostic['probe_stderr']}"
                             detail += f"；STRM目标={raw_t}；实际物理探测路径={diagnostic.get('mapped_path', '未转换')}"
+                            if diagnostic.get("permanent"):
+                                _update_cover_failure(raw_t, {"name": v_name, "reason": diagnostic.get("reason", ""), "ts": time.time()})
+                                detail += f"；已记入损坏清单，{COVER_FAILURE_SKIP_DAYS} 天内不再重试"
                             push_log(f"⚠️ [补齐封面失败] 【{v_name}】({reason}) ➔ {detail[:2200]}")
                     else:
                         # 封面已有，仅需深度探针补充音视频流信息与大小
