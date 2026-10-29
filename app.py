@@ -637,7 +637,8 @@ def _run_category_job(job: dict):
                             with gov_lock:
                                 gov_progress["covers_extracted"] += 1
                                 gov_progress["recent_success_streak"] += 1
-                                push_log(f"📸 [补齐封面] 【{v_name}】({reason}) ➔ 成功提取居中黄金封面并注入4K/AAC/大小！(已补封面: {gov_progress['covers_extracted']} 张)")
+                                note = f"（{diagnostic['note']}）" if diagnostic.get("note") else ""
+                                push_log(f"📸 [补齐封面] 【{v_name}】({reason}) ➔ 成功提取居中黄金封面并注入4K/AAC/大小！{note}(已补封面: {gov_progress['covers_extracted']} 张)")
                         else:
                             detail = diagnostic.get("reason", "未知失败")
                             if diagnostic.get("detail"):

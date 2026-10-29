@@ -154,6 +154,13 @@ def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optiona
                     info["bit_rate"] = int(fmt.get("bit_rate") or 0)
                 except Exception:
                     info["bit_rate"] = 0
+                # 流概要，探针取不到视频参数时用于诊断（只有音频 / 编码不识别 / 容器异常）
+                info["format_name"] = fmt.get("format_name", "")
+                info["streams"] = [
+                    f"{s.get('codec_type', '?')}:{s.get('codec_name') or s.get('codec_tag_string') or '?'}"
+                    + (f" {s.get('width')}x{s.get('height')}" if s.get("width") else "")
+                    for s in data.get("streams", [])
+                ]
 
                 for s in data.get("streams", []):
                     ctype = s.get("codec_type")
@@ -304,6 +311,12 @@ def describe_media(media_info: Dict) -> str:
     br = media_info.get("bit_rate") or 0
     if br:
         parts.append(f"{br / 1e6:.0f}Mbps")
+    size = media_info.get("filesize") or 0
+    parts.append(f"{size / 1e6:.1f}MB")
+    if not v:
+        # 探针没拿到视频参数时，附上容器与流概要
+        parts.append(f"容器={media_info.get('format_name') or '?'}")
+        parts.append("流=[" + ", ".join(media_info.get("streams") or []) + "]")
     return "片源 " + " ".join(parts)
 
 
@@ -322,8 +335,9 @@ _FFMPEG_HINTS = (
     (("hardware accelerated AV1", "codec av1"), "ffmpeg 不支持 AV1 软解，需安装带 libdav1d 的 ffmpeg"),
     (("Decoder (codec",), "ffmpeg 缺少该编码的解码器"),
     (("Input/output error", "Connection", "Operation timed out"), "CD2 读取 I/O 错误"),
-    (("Invalid data found",), "数据无效（文件损坏或 CD2 读取不完整）"),
+    (("Invalid data found", "Error parsing OBU", "Invalid repeated frame header"), "数据无效（文件损坏或 CD2 读取不完整）"),
     (("Could not find ref", "PPS id out of range", "missing picture"), "seek 落在不可独立解码的帧"),
+    (("does not contain any stream",), "输入中没有可解码的视频流（只有音频，或视频编码 ffmpeg 不识别）"),
     (("Output file is empty", "nothing was encoded", "未输出画面"), "未解码出任何画面"),
     (("超时",), "读取/解码超时（高码率冷文件需从 115 拉取大量数据）"),
 )
@@ -332,6 +346,23 @@ _FFMPEG_HINTS = (
 def _explain_ffmpeg_error(text: str) -> str:
     hints = [hint for keys, hint in _FFMPEG_HINTS if any(k in text for k in keys)]
     return ("判断：" + "、".join(dict.fromkeys(hints)) + "；") if hints else ""
+
+
+def _summarize_stderr(stderr: str, max_lines: int = 4) -> str:
+    """ffmpeg 错误输出去掉 [xxx @ 0x...] 前缀并去重，保留最后几条不同的信息"""
+    lines = []
+    for line in (stderr or "").splitlines():
+        line = re.sub(r"^\[[^\]]*@ (0x)?[0-9a-fA-F]+\]\s*", "", line.strip())
+        if line and line not in lines:
+            lines.append(line)
+    return " / ".join(lines[-max_lines:])[:300]
+
+
+# 这些错误说明读到的数据有问题，值得换 HTTP 直链再试一次以区分「CD2 读坏」与「文件本身损坏」
+NO_VIDEO_MARK = "CD2 探针解析出的流中没有视频流"
+_DATA_ERRORS = ("Invalid data found", "Error parsing OBU", "Invalid repeated frame header",
+                "Input/output error", "Connection", "Operation timed out",
+                "does not contain any stream", NO_VIDEO_MARK)
 
 
 def _grab_frame(src: str, poster_path: str, seek: int, max_threads: int, timeout: int,
@@ -344,7 +375,8 @@ def _grab_frame(src: str, poster_path: str, seek: int, max_threads: int, timeout
     if key_only:
         # 只解码关键帧：8K/高码率下避免解码整个 GOP，也避开 HEVC 开放 GOP 的不可独立解码帧
         cmd += ['-skip_frame', 'nokey']
-    cmd += ['-ss', time.strftime('%H:%M:%S', time.gmtime(seek)), '-noaccurate_seek',
+    # -copyts：seek 点之后已无关键帧时，ffmpeg 会把落点前的关键帧当作早于起点丢弃导致无输出，保留原时间戳可避免
+    cmd += ['-ss', time.strftime('%H:%M:%S', time.gmtime(seek)), '-noaccurate_seek', '-copyts',
             '-i', src, '-an', '-sn', '-dn',
             '-frames:v', '1',
             '-vf', 'scale=w=min(1080\\,iw):h=-2',
@@ -354,8 +386,7 @@ def _grab_frame(src: str, poster_path: str, seek: int, max_threads: int, timeout
         if os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
             os.replace(tmp, poster_path)
             return True, ""
-        err = (res.stderr or "").strip()
-        return False, (err[-400:] if err else f"返回码 {res.returncode}，未输出画面")
+        return False, _summarize_stderr(res.stderr) or f"返回码 {res.returncode}，未输出画面"
     except subprocess.TimeoutExpired:
         return False, f"超时 {timeout}s"
     finally:
@@ -388,6 +419,7 @@ def extract_cover_by_cd2(
         if not resolved:
             return False
         host_target = resolved
+        diagnostic["mapped_path"] = host_target
         if os.path.isdir(host_target):
             diagnostic["reason"] = "目标实际是目录"
             return False
@@ -400,6 +432,7 @@ def extract_cover_by_cd2(
         # 1. 轻量级快速探针 (顺带读取大小、总时长、视音频流)
         media_diag = {}
         media_info = probe_media_info(host_target, timeout_sec=35, diagnostic=media_diag)
+        no_video = False
         if not media_info.get("valid"):
             # 探针失败不放弃：按 60 秒时长兜底继续抽帧；valid=False 保证不会把空流信息写进 NFO
             if media_diag.get("probe_timeout"):
@@ -410,6 +443,10 @@ def extract_cover_by_cd2(
                 probe_note = "探针未取得时长或宽高"
             diagnostic.update(media_diag)
             diagnostic["probe_note"] = probe_note
+            streams = media_info.get("streams") or []
+            if streams and not any(s.startswith("video:") for s in streams):
+                # 探针正常解析出了流，但没有视频流：CD2 上再跑 ffmpeg 也不会有画面，只剩 HTTP 直链复核
+                no_video = True
             if not media_info.get("duration"):
                 media_info["duration"] = 60.0
 
@@ -448,9 +485,9 @@ def extract_cover_by_cd2(
         grab_timeout = max(timeout_sec, HEAVY_TIMEOUT) if heavy else timeout_sec
         # 依次：目标点关键帧 → 片头关键帧 → 片头不限关键帧（个别文件关键帧标记不正确）
         attempts = [(target_seek, True)] + ([(0, True)] if target_seek > 0 else []) + [(0, False)]
-        errors = []
+        errors = [f"{NO_VIDEO_MARK}"] if no_video else []
         ok = False
-        for seek, key_only in attempts:
+        for seek, key_only in ([] if no_video else attempts):
             ok, err = _grab_frame(host_target, poster_path, seek, max_threads, grab_timeout, key_only)
             if ok:
                 break
@@ -458,11 +495,22 @@ def extract_cover_by_cd2(
             # 读取超时说明 CD2 拉取过慢，再换位置重试只会叠加等待
             if err.startswith("超时") and len(errors) >= 2:
                 break
+        joined = " | ".join(errors)
+        if not ok and target_path.startswith(("http://", "https://")) and any(k in joined for k in _DATA_ERRORS):
+            # 经 CD2 读到的数据异常：换 STRM 直链读一次，区分「CD2 读坏」与「文件本身损坏」
+            ok, err = _grab_frame(target_path, poster_path, attempts[0][0], max_threads, grab_timeout)
+            if ok:
+                diagnostic["note"] = ("CD2 读到的文件不含视频流，HTTP 直链正常，已改用直链抽帧" if no_video
+                                      else "CD2 读取数据异常，已改用 HTTP 直链抽帧成功")
+            else:
+                errors.append(f"HTTP直链: {err}")
+                if any(k in err for k in _DATA_ERRORS):
+                    errors.insert(0, "CD2 与 HTTP 直链读到的数据都无法解码，文件本身很可能已损坏或不含视频")
+                joined = " | ".join(errors)
         if not ok:
-            joined = " | ".join(errors)
             diagnostic["reason"] = "FFmpeg 抽帧超时" if all("超时" in e for e in errors) else "FFmpeg 抽帧失败"
             probe_note = f"{diagnostic['probe_note']}，按 60 秒兜底；" if diagnostic.get("probe_note") else ""
-            diagnostic["detail"] = f"{diagnostic['media']}；{probe_note}{_explain_ffmpeg_error(joined)}{joined}"[:900]
+            diagnostic["detail"] = f"{diagnostic['media']}；{probe_note}{_explain_ffmpeg_error(joined)}{joined}"[:1600]
             return False
 
         # 4. 验证封面并顺带回写 NFO
