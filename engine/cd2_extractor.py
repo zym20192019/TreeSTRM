@@ -117,20 +117,20 @@ def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optiona
     except Exception:
         pass
 
-    cmd = [
-        'nice', '-n', '15',
-        'ionice', '-c', '3',
-        'ffprobe', '-v', 'quiet',
-        '-probesize', '1000000',
-        '-analyzeduration', '1000000',
-        '-print_format', 'json',
-        '-show_format',
-        '-show_streams',
-        video_path
-    ]
-
     last_error = ""
-    for attempt in range(2):
+    # 第二次放大探测窗口：高码率 / TS / MKV 在 1MB 内可能还读不到完整视频流参数
+    for attempt, (probesize, analyze) in enumerate((("1000000", "1000000"), ("20000000", "10000000"))):
+        cmd = [
+            'nice', '-n', '15',
+            'ionice', '-c', '3',
+            'ffprobe', '-v', 'error',
+            '-probesize', probesize,
+            '-analyzeduration', analyze,
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            video_path
+        ]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
             if diagnostic is not None:
@@ -150,6 +150,10 @@ def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optiona
                         info["filesize"] = int(fmt.get("size", 0))
                     except Exception:
                         pass
+                try:
+                    info["bit_rate"] = int(fmt.get("bit_rate") or 0)
+                except Exception:
+                    info["bit_rate"] = 0
 
                 for s in data.get("streams", []):
                     ctype = s.get("codec_type")
@@ -167,7 +171,9 @@ def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optiona
                                 "codec": s.get("codec_name", "h264"),
                                 "width": int(w),
                                 "height": int(h),
-                                "aspect": s.get("display_aspect_ratio", "")
+                                "aspect": s.get("display_aspect_ratio", ""),
+                                "pix_fmt": s.get("pix_fmt", ""),
+                                "fps": s.get("avg_frame_rate", ""),
                             }
                     elif ctype == "audio" and not info["audio"]:
                         info["audio"] = {
@@ -261,6 +267,105 @@ def update_nfo_with_streamdetails(nfo_path: str, media_info: Dict) -> bool:
         return False
 
 
+# 8K / 超高码率片源单次抽帧超时（秒）：冷文件需从 115 拉取的数据量与解码耗时都远高于普通片源
+HEAVY_TIMEOUT = 120
+
+_decoder_cache: Dict[str, bool] = {}
+
+
+def has_decoder(name: str) -> bool:
+    """ffmpeg 是否编译了指定解码器；检测失败时视为存在，不拦截"""
+    if name not in _decoder_cache:
+        try:
+            res = subprocess.run(['ffmpeg', '-hide_banner', '-decoders'], capture_output=True, text=True, timeout=10)
+            names = {parts[1] for parts in (line.split() for line in res.stdout.splitlines()) if len(parts) >= 2}
+            _decoder_cache[name] = name in names if res.returncode == 0 and names else True
+        except Exception:
+            _decoder_cache[name] = True
+    return _decoder_cache[name]
+
+
+def _fps(rate: str) -> float:
+    try:
+        num, _, den = str(rate).partition("/")
+        return float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def describe_media(media_info: Dict) -> str:
+    v = media_info.get("video", {})
+    parts = [str(v.get("codec", "?")), f"{v.get('width', '?')}x{v.get('height', '?')}"]
+    fps = _fps(v.get("fps", ""))
+    if fps:
+        parts.append(f"{fps:.0f}fps")
+    if v.get("pix_fmt"):
+        parts.append(str(v["pix_fmt"]))
+    br = media_info.get("bit_rate") or 0
+    if br:
+        parts.append(f"{br / 1e6:.0f}Mbps")
+    return "片源 " + " ".join(parts)
+
+
+def is_heavy_media(media_info: Dict) -> bool:
+    """8K、4K 高帧率或超高码率片源"""
+    v = media_info.get("video", {})
+    pixels = int(v.get("width", 0) or 0) * int(v.get("height", 0) or 0)
+    uhd = 3840 * 2160
+    return (pixels > uhd * 1.2
+            or (media_info.get("bit_rate") or 0) > 50_000_000
+            or (pixels >= uhd and _fps(v.get("fps", "")) > 50))
+
+
+_FFMPEG_HINTS = (
+    (("Cannot allocate memory", "Out of memory"), "内存不足（8K 解码占用大）"),
+    (("hardware accelerated AV1", "codec av1"), "ffmpeg 不支持 AV1 软解，需安装带 libdav1d 的 ffmpeg"),
+    (("Decoder (codec",), "ffmpeg 缺少该编码的解码器"),
+    (("Input/output error", "Connection", "Operation timed out"), "CD2 读取 I/O 错误"),
+    (("Invalid data found",), "数据无效（文件损坏或 CD2 读取不完整）"),
+    (("Could not find ref", "PPS id out of range", "missing picture"), "seek 落在不可独立解码的帧"),
+    (("Output file is empty", "nothing was encoded", "未输出画面"), "未解码出任何画面"),
+    (("超时",), "读取/解码超时（高码率冷文件需从 115 拉取大量数据）"),
+)
+
+
+def _explain_ffmpeg_error(text: str) -> str:
+    hints = [hint for keys, hint in _FFMPEG_HINTS if any(k in text for k in keys)]
+    return ("判断：" + "、".join(dict.fromkeys(hints)) + "；") if hints else ""
+
+
+def _grab_frame(src: str, poster_path: str, seek: int, max_threads: int, timeout: int,
+                key_only: bool = True) -> Tuple[bool, str]:
+    """抽一帧写入 poster_path（先写临时文件再替换），返回 (成功, 错误摘要)"""
+    tmp = poster_path + ".part.jpg"
+    cmd = ['nice', '-n', '15', 'ionice', '-c', '3',
+           'ffmpeg', '-hide_banner', '-nostdin', '-v', 'error', '-y',
+           '-threads', str(max_threads)]
+    if key_only:
+        # 只解码关键帧：8K/高码率下避免解码整个 GOP，也避开 HEVC 开放 GOP 的不可独立解码帧
+        cmd += ['-skip_frame', 'nokey']
+    cmd += ['-ss', time.strftime('%H:%M:%S', time.gmtime(seek)), '-noaccurate_seek',
+            '-i', src, '-an', '-sn', '-dn',
+            '-frames:v', '1',
+            '-vf', 'scale=w=min(1080\\,iw):h=-2',
+            '-q:v', '3', tmp]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if os.path.exists(tmp) and os.path.getsize(tmp) > 1000:
+            os.replace(tmp, poster_path)
+            return True, ""
+        err = (res.stderr or "").strip()
+        return False, (err[-400:] if err else f"返回码 {res.returncode}，未输出画面")
+    except subprocess.TimeoutExpired:
+        return False, f"超时 {timeout}s"
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def extract_cover_by_cd2(
     target_path: str,
     poster_path: str,
@@ -327,46 +432,36 @@ def extract_cover_by_cd2(
             # 短视频
             target_seek = max(0, min(3, int(real_duration / 2)))
 
-        s_time = time.strftime('%H:%M:%S', time.gmtime(target_seek))
+        v = media_info.get("video", {})
+        diagnostic["media"] = describe_media(media_info)
+        heavy = is_heavy_media(media_info)
 
-        # 3. 降权抽帧
-        cmd = [
-            'nice', '-n', '15',
-            'ionice', '-c', '3',
-            'ffmpeg', '-y',
-            '-threads', str(max_threads),
-            '-ss', s_time,
-            '-noaccurate_seek',
-            '-i', host_target,
-            '-frames:v', '1',
-            '-vf', 'scale=w=min(1080\\,iw):h=-2',
-            '-q:v', '3',
-            poster_path
-        ]
-        first_res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        # AV1 在 ffmpeg 中只有 libdav1d / libaom 能软解，内置 av1 解码器需要硬件加速
+        codec = str(v.get("codec", "")).lower()
+        if codec == "av1" and not (has_decoder("libdav1d") or has_decoder("libaom-av1")):
+            diagnostic["reason"] = "ffmpeg 不支持 AV1 软解"
+            diagnostic["detail"] = "服务器 ffmpeg 未编译 libdav1d，无法解码 AV1（8K 片源常见），请安装带 libdav1d 的 ffmpeg"
+            return False
 
-        # 若截取失败，回退到片头 0.5s 保底
-        if not os.path.exists(poster_path) or os.path.getsize(poster_path) < 1000:
-            cmd_fallback = [
-                'nice', '-n', '15',
-                'ionice', '-c', '3',
-                'ffmpeg', '-y',
-                '-threads', str(max_threads),
-                '-ss', '00:00:00',
-                '-noaccurate_seek',
-                '-i', host_target,
-                '-frames:v', '1',
-                '-vf', 'scale=w=min(1080\\,iw):h=-2',
-                '-q:v', '3',
-                poster_path
-            ]
-            fallback_res = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=timeout_sec)
-            if fallback_res.returncode != 0:
-                diagnostic["reason"] = "FFmpeg 抽帧失败"
-                diagnostic["detail"] = (fallback_res.stderr or "").strip()[-180:]
-        elif first_res.returncode != 0:
-            diagnostic["reason"] = "FFmpeg 抽帧失败"
-            diagnostic["detail"] = (first_res.stderr or "").strip()[-180:]
+        # 3. 降权抽帧：只解码关键帧；8K / 超高码率放宽超时
+        grab_timeout = max(timeout_sec, HEAVY_TIMEOUT) if heavy else timeout_sec
+        # 依次：目标点关键帧 → 片头关键帧 → 片头不限关键帧（个别文件关键帧标记不正确）
+        attempts = [(target_seek, True)] + ([(0, True)] if target_seek > 0 else []) + [(0, False)]
+        errors = []
+        ok = False
+        for seek, key_only in attempts:
+            ok, err = _grab_frame(host_target, poster_path, seek, max_threads, grab_timeout, key_only)
+            if ok:
+                break
+            errors.append(f"seek={seek}s{'' if key_only else '(全帧)'}: {err}")
+            # 读取超时说明 CD2 拉取过慢，再换位置重试只会叠加等待
+            if err.startswith("超时") and len(errors) >= 2:
+                break
+        if not ok:
+            joined = " | ".join(errors)
+            diagnostic["reason"] = "FFmpeg 抽帧超时" if all("超时" in e for e in errors) else "FFmpeg 抽帧失败"
+            diagnostic["detail"] = f"{diagnostic['media']}；{_explain_ffmpeg_error(joined)}{joined}"[:900]
+            return False
 
         # 4. 验证封面并顺带回写 NFO
         if os.path.exists(poster_path) and os.path.getsize(poster_path) > 1000:
@@ -396,9 +491,6 @@ def extract_cover_by_cd2(
             return True
         if not diagnostic.get("reason"):
             diagnostic["reason"] = "未生成有效封面文件"
-        return False
-    except subprocess.TimeoutExpired:
-        diagnostic["reason"] = "FFmpeg 抽帧超时"
         return False
     except Exception as exc:
         diagnostic["reason"] = "抽帧异常"

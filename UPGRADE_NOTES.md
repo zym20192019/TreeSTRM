@@ -65,6 +65,15 @@
 - 「仅补流」分支以前不做存在性检查，直接 ffprobe，失败只报「探针重试中」；现在同样先走 `resolve_cd2_path`。
 - 部署后若仍大量报错，按日志中的「最深可访问目录」判断是映射问题还是文件确实不在。
 
+### 8K / 高帧率 / 超高码率抽封面失败
+旧实现的问题：ffmpeg 未加 `-v error`，失败只记录 stderr 最后 180 字符（基本是统计行，看不出原因）；首次抽帧超时直接抛出，不走片头保底；探针只读 1MB，高码率 TS/MKV 可能拿不到视频参数。
+- 抽帧只解码关键帧（`-skip_frame nokey`），跳过音频/字幕；先写 `.part.jpg` 再原子替换。本地实测 8K60 HEVC 10bit 抽帧 2.0s → 0.4s。
+- 8K、4K 50fps 以上或码率 > 50Mbps 的片源单次超时放宽到 120 秒（`HEAVY_TIMEOUT`）。
+- 依次尝试：目标点关键帧 → 片头关键帧 → 片头全帧；每次独立超时，连续超时两次即停止。
+- 探针第二次尝试把探测窗口放大到 20MB / 10 秒。
+- AV1 片源：ffmpeg 未编译 `libdav1d` / `libaom` 时直接报「ffmpeg 不支持 AV1 软解」（8K 片源常见 AV1）。服务器可用 `ffmpeg -hide_banner -decoders | grep -E "dav1d|libaom"` 确认，没有则需换带 libdav1d 的 ffmpeg（如 jellyfin-ffmpeg 或静态版）。
+- 失败日志现在包含：片源编码 / 分辨率 / 帧率 / 像素格式 / 码率、每次尝试的 ffmpeg 错误，以及归类判断（内存不足、解码器缺失、CD2 I/O、超时等）。
+
 ### 官方刮削独立为 `scraper/` 模块
 旧 `scraper_service.py` 已删除，由仓库内独立包 `scraper/` 取代（`app.py` 只负责挂载路由与回调）。
 
