@@ -40,7 +40,7 @@ def map_to_cd2_path(target: str, cd2_mount_path: Optional[str] = None, stream_pr
 
 
 def _match_in_listing(parent: str, name: str) -> Optional[str]:
-    """列父目录（同时促使 CD2 刷新该目录缓存），按原名 / Unicode 规范化 / 忽略大小写查找实际文件名"""
+    """列父目录（同时促使 CD2 刷新该目录缓存），按原名 / Unicode 规范化 / 忽略大小写 / 首尾空格查找实际文件名"""
     try:
         entries = os.listdir(parent)
     except OSError:
@@ -54,6 +54,11 @@ def _match_in_listing(parent: str, name: str) -> Optional[str]:
     low = nfc.casefold()
     for e in entries:
         if unicodedata.normalize("NFC", e).casefold() == low:
+            return e
+    name_stripped = name.strip()
+    low_stripped = low.strip()
+    for e in entries:
+        if e.strip() == name_stripped or unicodedata.normalize("NFC", e).strip().casefold() == low_stripped:
             return e
     return None
 
