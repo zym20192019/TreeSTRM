@@ -16,6 +16,7 @@ import time
 import shutil
 import subprocess
 import urllib.parse
+import unicodedata
 from typing import Optional, Dict, Tuple
 from xml.etree import ElementTree as ET
 
@@ -36,6 +37,69 @@ def map_to_cd2_path(target: str, cd2_mount_path: Optional[str] = None, stream_pr
     if target.startswith('/movies/'):
         return '/Movies/' + target[8:]
     return target
+
+
+def _match_in_listing(parent: str, name: str) -> Optional[str]:
+    """列父目录（同时促使 CD2 刷新该目录缓存），按原名 / Unicode 规范化 / 忽略大小写查找实际文件名"""
+    try:
+        entries = os.listdir(parent)
+    except OSError:
+        return None
+    if name in entries:
+        return name
+    nfc = unicodedata.normalize("NFC", name)
+    for e in entries:
+        if unicodedata.normalize("NFC", e) == nfc:
+            return e
+    low = nfc.casefold()
+    for e in entries:
+        if unicodedata.normalize("NFC", e).casefold() == low:
+            return e
+    return None
+
+
+def resolve_cd2_path(host_target: str, diagnostic: Optional[Dict] = None,
+                     waits: Tuple[float, ...] = (1.5, 3.0)) -> Optional[str]:
+    """确认 CD2 挂载路径真实存在，返回可用路径；不存在返回 None 并在 diagnostic 写明原因。
+
+    CD2 FUSE 对未列过或刚变动的目录可能对单文件 lookup 返回 ENOENT，
+    因此未命中时先列父目录促使其刷新，再按递增间隔重试。
+    """
+    diagnostic = diagnostic if diagnostic is not None else {}
+    if os.path.exists(host_target):
+        return host_target
+    parent, name = os.path.split(host_target)
+    for wait in (0.0,) + tuple(waits):
+        if wait:
+            time.sleep(wait)
+        if os.path.isdir(parent):
+            actual = _match_in_listing(parent, name)
+            if actual:
+                path = os.path.join(parent, actual)
+                if os.path.exists(path):
+                    if actual != name:
+                        diagnostic["name_mismatch"] = actual
+                    return path
+        elif os.path.exists(host_target):
+            return host_target
+
+    diagnostic["mapped_path"] = host_target
+    # 找到最深的存在的上级目录，区分「挂载不可用 / 目录不存在 / 文件不存在」
+    anc = parent
+    while anc and not os.path.isdir(anc):
+        up = os.path.dirname(anc)
+        if up == anc:
+            anc = ""
+            break
+        anc = up
+    diagnostic["existing_ancestor"] = anc or "(无)"
+    if os.path.isdir(parent):
+        diagnostic["reason"] = "目标路径不存在"
+        diagnostic["detail"] = "父目录存在但列表中没有该文件（115 上可能已删除或改名，STRM 已过期）"
+    else:
+        diagnostic["reason"] = "目标路径不存在"
+        diagnostic["detail"] = f"父目录不存在，最深可访问目录为 {anc or '(无，CD2 挂载可能不可用)'}（检查 cd2_mount_path 与 STRM 前缀映射，或该目录已在 115 移动）"
+    return None
 
 
 def probe_media_info(video_path: str, timeout_sec: int = 35, diagnostic: Optional[Dict] = None) -> Dict:
@@ -215,19 +279,10 @@ def extract_cover_by_cd2(
         # 动态将远程 URL 前缀映射为本地 CD2 真实物理挂载路径
         host_target = map_to_cd2_path(target_path, cd2_mount_path, stream_prefix)
 
-        # CD2 FUSE 挂载点瞬时响应容错重试机制（防并发与 IO 抖动误判）
-        exists = False
-        for attempt in range(3):
-            if os.path.exists(host_target):
-                exists = True
-                break
-            if attempt < 2:
-                time.sleep(1.0)
-
-        if not exists:
-            diagnostic["reason"] = "目标路径不存在"
-            diagnostic["mapped_path"] = host_target
+        resolved = resolve_cd2_path(host_target, diagnostic)
+        if not resolved:
             return False
+        host_target = resolved
         if os.path.isdir(host_target):
             diagnostic["reason"] = "目标实际是目录"
             return False

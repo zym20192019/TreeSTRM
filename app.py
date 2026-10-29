@@ -343,7 +343,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
 
 # ----------------- CD2 本地通道 Fast Seek 抽帧核心 (0 验证码、0 拦截、0.9s 秒级出图) -----------------
 
-from engine.cd2_extractor import extract_cover_by_cd2, probe_media_info, update_nfo_with_streamdetails, map_to_cd2_path
+from engine.cd2_extractor import extract_cover_by_cd2, probe_media_info, update_nfo_with_streamdetails, map_to_cd2_path, resolve_cd2_path
 
 
 def has_streamdetails_in_nfo(nfo_path: str) -> bool:
@@ -650,7 +650,11 @@ def _run_category_job(job: dict):
                         # 封面已有，仅需深度探针补充音视频流信息与大小
                         cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
                         s_prefix = cfg.get("default_prefix", DEFAULT_STREAM_PREFIX)
-                        host_target = map_to_cd2_path(raw_t, cd2_root, s_prefix)
+                        p_diag = {}
+                        host_target = resolve_cd2_path(map_to_cd2_path(raw_t, cd2_root, s_prefix), p_diag)
+                        if not host_target:
+                            push_log(f"⚠️ [补流失败] 【{v_name}】➔ {p_diag.get('reason')}：{p_diag.get('detail', '')}；实际物理探测路径={p_diag.get('mapped_path')}")
+                            return
                         m_info = probe_media_info(host_target, timeout_sec=35)
                         if update_nfo_with_streamdetails(nfo_p, m_info):
                             with gov_lock:
