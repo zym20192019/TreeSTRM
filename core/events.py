@@ -53,6 +53,24 @@ def push_log(msg: str):
     except Exception:
         pass
 
+def init_load_recent_logs():
+    """启动时从最近的日志文件预载实时日志，重启后运行日志页不为空"""
+    if live_log_messages:
+        return
+    lines: List[str] = []
+    for p in sorted(glob.glob(os.path.join(LOG_DIR, "treestrm_*.log")))[-2:]:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                lines.extend(f.read().splitlines())
+        except OSError:
+            pass
+    for line in lines[-MAX_LIVE_LOGS:]:
+        # 文件格式 [YYYY-mm-dd HH:MM:SS] msg → 实时格式 [HH:MM:SS] msg
+        if len(line) > 21 and line[0] == "[" and line[20] == "]":
+            line = f"[{line[12:20]}]{line[21:]}"
+        live_log_messages.append(line)
+
+
 def get_live_logs() -> List[str]:
     return list(live_log_messages)
 

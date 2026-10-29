@@ -10,7 +10,7 @@ from core.config import (
     DEFAULT_STREAM_PREFIX, DEFAULT_CD2_MOUNT_PATH, DEFAULT_OUTPUT_DIR, DEFAULT_ADULT_CID, DEFAULT_MOVIES_CID,
     ConfigModel, load_config, save_config, modify_config,
 )
-from core.events import push_log, live_log_messages, send_telegram_alert, get_dynamic_delay, MIN_SAFE_DELAY, LOG_DIR
+from core.events import push_log, live_log_messages, send_telegram_alert, get_dynamic_delay, MIN_SAFE_DELAY, LOG_DIR, init_load_recent_logs
 from services.cloud115 import create_115_session, export_115_tree
 from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
@@ -20,6 +20,7 @@ AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
+init_load_recent_logs()
 
 sync_progress = {
     "is_syncing": False,
@@ -630,7 +631,8 @@ def _run_category_job(job: dict):
                         diagnostic = {}
                         cd2_root = cfg.get("cd2_mount_path", "/Movies/CloudDrive/115")
                         s_prefix = cfg.get("default_prefix", DEFAULT_STREAM_PREFIX)
-                        ok = extract_cover_by_cd2(raw_t, p_path, th_path, nfo_path=nfo_p, diagnostic=diagnostic, cd2_mount_path=cd2_root, stream_prefix=s_prefix)
+                        # 单封面策略：只写 -poster.jpg，不生成 -thumb.jpg
+                        ok = extract_cover_by_cd2(raw_t, p_path, None, nfo_path=nfo_p, diagnostic=diagnostic, cd2_mount_path=cd2_root, stream_prefix=s_prefix)
                         if ok:
                             with gov_lock:
                                 gov_progress["covers_extracted"] += 1

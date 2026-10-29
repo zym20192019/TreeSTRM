@@ -401,17 +401,17 @@ def extract_cover_by_cd2(
         media_diag = {}
         media_info = probe_media_info(host_target, timeout_sec=35, diagnostic=media_diag)
         if not media_info.get("valid"):
+            # 探针失败不放弃：按 60 秒时长兜底继续抽帧；valid=False 保证不会把空流信息写进 NFO
             if media_diag.get("probe_timeout"):
-                diagnostic["reason"] = "CD2读取超时"
-                diagnostic["detail"] = "冷文件探针在限定时间内未返回，未判定为视频损坏"
+                probe_note = "探针超时"
             elif media_diag.get("probe_returncode", 0) not in (0, None):
-                diagnostic["reason"] = "媒体容器解析失败"
-                diagnostic["detail"] = "ffprobe 返回非零状态，未取得有效媒体流"
+                probe_note = "探针解析失败"
             else:
-                diagnostic["reason"] = "媒体探针结果无有效视频流"
-                diagnostic["detail"] = "ffprobe返回成功但未取得有效时长或视频宽高"
+                probe_note = "探针未取得时长或宽高"
             diagnostic.update(media_diag)
-            return False
+            diagnostic["probe_note"] = probe_note
+            if not media_info.get("duration"):
+                media_info["duration"] = 60.0
 
         # 2. 截取点策略（超长直播/大文件保护）：
         # 对于超长录播 (>10分钟 / 600秒)，坚决不要 seek 到几个小时的中间去拉取数 GB 远端数据，极易触发跨洋超时
@@ -434,7 +434,8 @@ def extract_cover_by_cd2(
 
         v = media_info.get("video", {})
         diagnostic["media"] = describe_media(media_info)
-        heavy = is_heavy_media(media_info)
+        # 探针失败多半是读取慢或高码率，按重型片源放宽超时
+        heavy = is_heavy_media(media_info) or not media_info.get("valid")
 
         # AV1 在 ffmpeg 中只有 libdav1d / libaom 能软解，内置 av1 解码器需要硬件加速
         codec = str(v.get("codec", "")).lower()
@@ -460,7 +461,8 @@ def extract_cover_by_cd2(
         if not ok:
             joined = " | ".join(errors)
             diagnostic["reason"] = "FFmpeg 抽帧超时" if all("超时" in e for e in errors) else "FFmpeg 抽帧失败"
-            diagnostic["detail"] = f"{diagnostic['media']}；{_explain_ffmpeg_error(joined)}{joined}"[:900]
+            probe_note = f"{diagnostic['probe_note']}，按 60 秒兜底；" if diagnostic.get("probe_note") else ""
+            diagnostic["detail"] = f"{diagnostic['media']}；{probe_note}{_explain_ffmpeg_error(joined)}{joined}"[:900]
             return False
 
         # 4. 验证封面并顺带回写 NFO
