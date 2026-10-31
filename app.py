@@ -457,6 +457,8 @@ def _run_category_job(job: dict):
     for root, dirs, files in os.walk(base_cat_dir):
         strms = [f for f in files if f.endswith('.strm')]
         if strms:
+            # 内存集合极速匹配，严禁通过跨洋网络发起千万次 exists/stat IO 请求
+            file_set = set(files)
             folder_items = []
             for sf in strms:
                 base_fn = sf[:-5]
@@ -466,20 +468,17 @@ def _run_category_job(job: dict):
                 strm_full_path = os.path.join(root, sf)
                 is_sub = is_subtitle_strm(strm_full_path, sf)
                 
-                poster = os.path.join(root, f"{base_fn}-poster.jpg")
-                nfo = os.path.join(root, f"{base_fn}.nfo")
-                has_p = os.path.exists(poster) and os.path.getsize(poster) > 1000
-                # ASMR 等普通专区的“有 NFO”与“内容已完成”是两个概念；
-                # 这里只统计文件是否存在，避免把“缺少流信息”误报成“缺少 NFO”。
-                has_n = os.path.exists(nfo) and os.path.getsize(nfo) > 0
-                if has_n:
-                    try:
-                        with open(nfo, "r", encoding="utf-8-sig", errors="ignore") as nf:
-                            nfo_text = nf.read()
-                        has_n = "<movie" in nfo_text.lower() and "<title" in nfo_text.lower()
-                    except Exception:
-                        has_n = False
-                has_s = has_streamdetails_in_nfo(nfo) if has_n else False
+                poster_name = f"{base_fn}-poster.jpg"
+                nfo_name = f"{base_fn}.nfo"
+                poster = os.path.join(root, poster_name)
+                nfo = os.path.join(root, nfo_name)
+                
+                # 内存快速判断，彻底避免触发 FUSE/SSHFS 跨洋单文件 lookup
+                has_p = poster_name in file_set
+                has_n = nfo_name in file_set
+                has_s = False
+                if probe_streams and has_n:
+                    has_s = has_streamdetails_in_nfo(nfo)
                 
                 # 字幕文件不计入待补封面和待补 NFO 统计
                 if not is_sub:
