@@ -394,7 +394,14 @@ def has_streamdetails_in_nfo(nfo_path: str) -> bool:
     except Exception:
         return False
 def is_subtitle_strm(strm_path: str, filename: str) -> bool:
-    """读取 STRM 实际目标扩展名，避免 `(sub).mp4` 被误判为字幕。"""
+    """优先根据文件名判断，避免跨洋对每个 strm 发起 open() 导致 IO 卡死。"""
+    m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
+    if m:
+        ext_candidate = '.' + m.group(1).lower()
+        if ext_candidate in COMPREHENSIVE_SUBTITLE_EXTS:
+            return True
+        return False
+    # 若文件名无法确定扩展名，才在本地小范围读取实际目标扩展名
     try:
         with open(strm_path, "r", encoding="utf-8", errors="replace") as f:
             target = f.readline().strip()
@@ -403,8 +410,7 @@ def is_subtitle_strm(strm_path: str, filename: str) -> bool:
             return target_ext in COMPREHENSIVE_SUBTITLE_EXTS
     except OSError:
         pass
-    m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
-    return bool(m and ('.' + m.group(1).lower()) in COMPREHENSIVE_SUBTITLE_EXTS)
+    return False
 
 
 # ----------------- 自动队列调度器 -----------------
