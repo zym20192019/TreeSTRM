@@ -394,22 +394,19 @@ def has_streamdetails_in_nfo(nfo_path: str) -> bool:
     except Exception:
         return False
 def is_subtitle_strm(strm_path: str, filename: str) -> bool:
-    """优先根据文件名判断，避免跨洋对每个 strm 发起 open() 导致 IO 卡死。"""
-    m = re.search(r'\(([^)]+)\)$', filename[:-5]) if filename.lower().endswith('.strm') else None
+    """仅通过文件名与后缀判定，严格禁止打开 strm 产生远程网络 IO"""
+    lower_fn = filename.lower()
+    if not lower_fn.endswith('.strm'):
+        return False
+    base_fn = filename[:-5]
+    m = re.search(r'\(([^)]+)\)$', base_fn)
     if m:
         ext_candidate = '.' + m.group(1).lower()
-        if ext_candidate in COMPREHENSIVE_SUBTITLE_EXTS:
+        return ext_candidate in COMPREHENSIVE_SUBTITLE_EXTS
+    # 检查文件名本身是否带有字幕扩展名标识
+    for sub_ext in COMPREHENSIVE_SUBTITLE_EXTS:
+        if base_fn.lower().endswith(sub_ext):
             return True
-        return False
-    # 若文件名无法确定扩展名，才在本地小范围读取实际目标扩展名
-    try:
-        with open(strm_path, "r", encoding="utf-8", errors="replace") as f:
-            target = f.readline().strip()
-        target_ext = os.path.splitext(target.split("?", 1)[0])[1].lower()
-        if target_ext:
-            return target_ext in COMPREHENSIVE_SUBTITLE_EXTS
-    except OSError:
-        pass
     return False
 
 
