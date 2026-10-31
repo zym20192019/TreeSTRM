@@ -60,6 +60,14 @@ def _match_in_listing(parent: str, name: str) -> Optional[str]:
     for e in entries:
         if e.strip() == name_stripped or unicodedata.normalize("NFC", e).strip().casefold() == low_stripped:
             return e
+    # 容错：网盘端批量重命名产生的前导负号/减号（如 -MAH01657.mp4 对应 MAH01657.mp4）
+    minus_name = f"-{name}"
+    minus_low = f"-{low}"
+    for e in entries:
+        if e == minus_name or e.lstrip("-_ ") == name_stripped:
+            return e
+        if unicodedata.normalize("NFC", e).casefold() == minus_low:
+            return e
     return None
 
 
