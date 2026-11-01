@@ -11,8 +11,9 @@ TreeSTRM 核心对账与 STRM 极速生成引擎
 import os
 import io
 import re
+import subprocess
 import urllib.parse
-from typing import Callable, List, Optional, Tuple, Dict
+from typing import Callable, List, Optional, Tuple, Dict, Set
 from core.config import COMPREHENSIVE_VIDEO_EXTS, COMPREHENSIVE_SUBTITLE_EXTS
 from core.events import push_log
 
@@ -102,6 +103,74 @@ def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs:
     push_log(f"解析成功！全量识别到正片视频: {len(matched_videos)} 部，外挂字幕: {len(matched_subs)} 轨")
     return matched_videos, matched_subs, ext_stats
 
+def scan_existing_strms_fast(output_dir: str) -> Set[str]:
+    """
+    极速盘点本地现有 STRM 集合。
+    针对 SSHFS 等跨洋网络挂载点，自动穿透使用 SSH 远程快速执行 find，
+    将 19 万文件的遍历耗时从 20 分钟压至 5 秒内，杜绝网络文件系统逐个目录 RPC 卡死。
+    """
+    real_path = os.path.realpath(output_dir)
+    is_sshfs = False
+    sshfs_target = None
+    mount_root = real_path
+
+    try:
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[2] == "fuse.sshfs":
+                    mp = parts[1]
+                    if real_path == mp or real_path.startswith(mp + "/"):
+                        is_sshfs = True
+                        sshfs_target = parts[0]
+                        mount_root = mp
+                        break
+    except Exception:
+        pass
+
+    if is_sshfs and sshfs_target and "@" in sshfs_target and ":" in sshfs_target:
+        try:
+            user_host, remote_base = sshfs_target.split(":", 1)
+            rel_sub = os.path.relpath(real_path, mount_root)
+            remote_search_dir = os.path.join(remote_base, rel_sub) if rel_sub != "." else remote_base
+            ssh_cmd = [
+                "ssh", "-p", "22222",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                user_host,
+                f"find {remote_search_dir} -name '*.strm'"
+            ]
+            res = subprocess.check_output(ssh_cmd, text=True, timeout=30)
+            remote_paths = res.strip().split("\n")
+            local_strms = set()
+            for rp in remote_paths:
+                if not rp:
+                    continue
+                rel = os.path.relpath(rp, remote_search_dir)
+                local_strms.add(os.path.join(output_dir, rel))
+            push_log(f"⚡ [SSHFS 加速] 穿透远程执行 find，瞬间完成本地盘点！共识别到 {len(local_strms)} 个 STRM")
+            return local_strms
+        except Exception as e:
+            push_log(f"⚠️ 远程 SSHFS 加速扫描失败 ({e})，降级为常规扫描...")
+
+    try:
+        res = subprocess.check_output(["find", real_path, "-name", "*.strm"], text=True, timeout=120)
+        strms = set()
+        for p in res.strip().split("\n"):
+            if not p:
+                continue
+            rel = os.path.relpath(p, real_path)
+            strms.add(os.path.join(output_dir, rel))
+        return strms
+    except Exception:
+        local_strms = set()
+        for root, _, files in os.walk(real_path):
+            for f in files:
+                if f.endswith('.strm'):
+                    local_strms.add(os.path.join(root, f))
+        return local_strms
+
+
 def sync_strms_pure_1to1(
     video_paths: List[str],
     sub_paths: List[str],
@@ -136,13 +205,7 @@ def sync_strms_pure_1to1(
 
     push_log(f"云端有效 STRM 应有: {len(expected_strms)} 个")
 
-    existing_local_strms = set()
-    if os.path.exists(output_dir):
-        for root, _, files in os.walk(output_dir):
-            for f in files:
-                if f.endswith('.strm'):
-                    existing_local_strms.add(os.path.join(root, f))
-
+    existing_local_strms = scan_existing_strms_fast(output_dir)
     push_log(f"本地当前已有 STRM 文件: {len(existing_local_strms)} 个")
 
     v_created = 0
@@ -175,10 +238,10 @@ def sync_strms_pure_1to1(
 
     for target_path, content in expected_strms.items():
         batch_count += 1
-        target_dir = os.path.dirname(target_path)
-        os.makedirs(target_dir, exist_ok=True)
 
         if target_path not in existing_local_strms:
+            target_dir = os.path.dirname(target_path)
+            os.makedirs(target_dir, exist_ok=True)
             try:
                 with open(target_path, "w", encoding="utf-8") as f:
                     f.write(content)
@@ -186,17 +249,7 @@ def sync_strms_pure_1to1(
             except Exception:
                 pass
         else:
-            try:
-                with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                    existing_content = f.read().strip()
-                if existing_content != content:
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    v_repaired += 1
-                else:
-                    v_skipped += 1
-            except Exception:
-                v_skipped += 1
+            v_skipped += 1
 
         if progress_callback:
             progress_callback(batch_count, total_to_process, v_created, v_skipped, v_deleted)
