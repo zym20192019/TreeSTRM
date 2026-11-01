@@ -206,8 +206,11 @@ class ScraperService:
         cat_dir = os.path.join(self.adult_root(), category)
         found: List[Tuple[str, Dict[str, bool]]] = []
         complete = 0
-        for root, dirs, files in os.walk(cat_dir):
-            dirs.sort()
+
+        from core.fast_fs import fast_walk_files
+        dir_files_map = fast_walk_files(cat_dir)
+
+        for root, files in dir_files_map.items():
             for name in sorted(files):
                 if not name.lower().endswith(".strm"):
                     continue

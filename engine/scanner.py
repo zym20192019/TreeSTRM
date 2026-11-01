@@ -27,12 +27,15 @@ def scan_single_category(cat_dir: str) -> Dict[str, Any]:
     n_set = set()
     sub_count = 0
 
+    from core.fast_fs import fast_walk_files
+    dir_files_map = fast_walk_files(cat_dir)
+
     # 极速内存扫盘：不打开文件，零磁盘读取开销
-    for root, _, files in os.walk(cat_dir):
+    for root, files in dir_files_map.items():
         for f in files:
             if f.endswith('.strm'):
                 base = f[:-5]
-                # 仅当文件名显式包含字幕特征时判定为字幕，免去逐个 open() 读取
+                # 纯文件名正则判定，免去逐个 open() 读取
                 lower_base = base.lower()
                 if any(lower_base.endswith(ext) for ext in SUBTITLE_EXTS):
                     sub_count += 1

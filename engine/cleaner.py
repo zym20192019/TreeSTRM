@@ -26,7 +26,10 @@ def clean_orphan_metadata_for_category(category_name: str, base_dir: str = "/Mov
     del_thumb = 0
     del_fanart = 0
 
-    for root, dirs, files in os.walk(target_dir):
+    from core.fast_fs import fast_walk_files
+    dir_files_map = fast_walk_files(target_dir)
+
+    for root, files in dir_files_map.items():
         strms = set()
         for f in files:
             if f.endswith('.strm'):
