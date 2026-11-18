@@ -132,6 +132,13 @@
 - 兼容：`POST /api/categories/scrape_official` 保留，变为「加入刮削队列」的别名，立即返回。`/api/status` 新增 `scraper` 字段。
 - 清理失效（`engine/cleaner.py`）现在也删除孤立的 `-fanart.jpg`，返回 `deleted_fanarts`。
 
+**目录树解析：名字原样保留（2026-11-19）**
+- `engine/reconciler.py` `_tree_entry_name` 只剥结构前缀（恰好一个 `|-`，根行 `|——`），不再 `strip()` 名字，也不再吃掉名字开头的 `-`/`—`。以前首尾带空格或以 `-` 开头的 115 名字会生成和云端对不上的 STRM，Alist 返回 `object not found`，播放器报「媒体格式错误」。
+- 层级改为只数结构前缀里的 `|`（`_tree_line_level`），名字里带 `|` 时不会再算错层级。
+- 115 名字里有真实换行时，目录树会拆成多行。解析器仍用空格拼接，但会在日志里打 `⚠️ 发现 N 个 115 名字含换行符` 并列出前 20 个，这类条目必须在 115 改名才能播放。ASCII `/` 在目录树里和全角 `／` 无法区分，同样只能去 115 改名。
+- 升级影响：在当时全库 19.7 万条上，新旧解析只差 1 条（`cp/电子厂/-KJYNCCDH.mp4`），已提前把本地 strm/nfo/poster 改名对齐，对账结果为 0 新增、0 清理。
+- 回归测试：`tests/test_tree_parser_regression.py`（服务器没有 pytest，可直接 import 调用 `test_*` 函数）。
+
 ## 四、已知限制
 
 1. 专区治理（`/api/categories`）只覆盖 `<default_output>/成人` 下的子目录；其他对账任务只做 STRM 对账。

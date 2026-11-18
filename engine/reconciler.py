@@ -24,18 +24,38 @@ ORPHAN_GUARD_MAX_RATIO = 0.3
 # progress_callback(已处理, 总数, 新建, 跳过, 删除)
 ProgressCallback = Callable[[int, int, int, int, int], None]
 
+# 115 目录树结构前缀：根行为 "|——"，其余每层一个 "| "，最后接 "|-"，如 "| | |-名字"。
+_TREE_PREFIX_RE = re.compile(r"^(?:\| )*\|(?:——|-)")
+
+
 def _tree_entry_name(line: str) -> str:
-    """只移除 115 树格式的结构前缀（包括 ASCII -、中文全角破折号 ——、制表符 ─ 等），保留真实文件名的首字符。"""
+    """只剥掉 115 树格式的结构前缀（恰好一个 "|-" 或根行的 "|——"），名字本身原样保留。
+
+    115 允许名字首尾带空格、以 "-"/"—" 开头；Alist 按真实名字寻址，
+    对名字做任何 strip 都会让 STRM 路径和云端对不上，导致播放失败。
+    """
     value = str(line or "").replace("\ufeff", "").rstrip("\r\n")
+    m = _TREE_PREFIX_RE.match(value)
+    if m:
+        return value[m.end():]
+    # 非标准行（理论上不出现）：退回宽松解析
     value = re.sub(r"^[|\s]*", "", value)
     value = re.sub(r"^[—\-\─\–]+", "", value)
     return value.strip()
+
+
+def _tree_line_level(line: str) -> int:
+    """层级只按结构前缀里的 "|" 计算，避免名字里自带的 "|" 把层级算错。"""
+    value = str(line or "").replace("\ufeff", "")
+    m = _TREE_PREFIX_RE.match(value)
+    return m.group(0).count("|") if m else value.count("|")
 
 
 def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs: bool = True) -> Tuple[List[str], List[str], Dict[str, int]]:
     """流式合并软换行并解析目录树结构"""
     push_log("正在解析目录树并构建 1:1 资产拓扑...")
     clean_lines = []
+    wrapped_names: List[str] = []
     current_line = ''
     for raw_line in io.StringIO(str(content or "")):
         line = str(raw_line or "").replace("\ufeff", "").rstrip("\r\n")
@@ -46,12 +66,18 @@ def parse_tree_1to1(content: str, target_dir_name: str = "成人", include_subs:
                 clean_lines.append(current_line)
             current_line = line
         else:
-            # 与 app.py 保持一致：软换行属于同一文件名的空格边界。
+            # 115 名字里含真实换行时，目录树会把它拆成多行；这里用空格拼回同一个名字。
+            # 拼出来的名字与云端真实名字不同，生成的 STRM 在 Alist 上找不到文件，必须去 115 改名。
+            wrapped_names.append((current_line + "⏎" + line)[-120:])
             current_line += " " + line.lstrip(" ")
     if current_line:
         clean_lines.append(current_line)
+    if wrapped_names:
+        push_log(f"⚠️ 发现 {len(wrapped_names)} 个 115 名字含换行符，对应 STRM 将无法播放，请在 115 把换行改成空格后重新同步：")
+        for w in wrapped_names[:20]:
+            push_log(f"   ↳ {w}")
 
-    line_levels = [l.count("|") for l in clean_lines]
+    line_levels = [_tree_line_level(l) for l in clean_lines]
     num_lines = len(clean_lines)
 
     path_stack = {}
