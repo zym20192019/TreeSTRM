@@ -103,3 +103,13 @@ def test_mark_ledger_repaired_only_fully_repaired_batches():
     assert mark_ledger_repaired(ledger, {"x/a.strm", "x/b.strm"}) == 1
     after = json.load(open(ledger, encoding="utf-8"))
     assert [r["status"] for r in after] == ["repaired", "pending_repair", "repaired"]
+
+
+def test_apply_ai_result_handles_name_at_length_limit():
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "长" * 83 + "x.nfo")  # 83*3+1+4 = 254 字节，再加 ".tmp" 就超过 255
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(FALLBACK_NFO)
+    assert apply_ai_result(p, {"clean_title": "长名字"})
+    assert ET.parse(p).getroot().findtext("title") == "长名字"
+    assert os.listdir(d) == [os.path.basename(p)]

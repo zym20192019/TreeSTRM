@@ -120,9 +120,17 @@ def apply_ai_result(nfo_path: str, item: dict) -> bool:
         root.insert(insert_at + offset, node)
 
     ET.indent(tree, space="  ")
-    tmp_path = nfo_path + ".tmp"
-    tree.write(tmp_path, encoding="utf-8", xml_declaration=True)
-    os.replace(tmp_path, nfo_path)
+    # 临时文件用短名：原名接近 255 字节上限时，追加 ".tmp" 会超长（SSHFS 上表现为 EBADMSG）
+    tmp_path = os.path.join(os.path.dirname(nfo_path), f".airepair-{os.getpid()}.tmp")
+    try:
+        tree.write(tmp_path, encoding="utf-8", xml_declaration=True)
+        os.replace(tmp_path, nfo_path)
+    except OSError:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
     return True
 
 
@@ -152,7 +160,12 @@ def repair_pending_nfos(
                 result = {}
             for nfo, rel in zip(chunk, rels):
                 item = result.get(rel)
-                if isinstance(item, dict) and apply_ai_result(nfo, item):
+                try:
+                    ok = isinstance(item, dict) and apply_ai_result(nfo, item)
+                except Exception as e:
+                    log(f"⚠️ [AI待补修复] 写回失败，跳过: {os.path.basename(nfo)[:80]}: {type(e).__name__}")
+                    ok = False
+                if ok:
                     stats["repaired"] += 1
                     stats["repaired_paths"].append(rel)
                 else:
