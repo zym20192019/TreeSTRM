@@ -197,6 +197,102 @@ def scan_existing_strms_fast(output_dir: str) -> Set[str]:
         return local_strms
 
 
+# 同目录同主名视频的「主文件」优先级：保持 <主名>.strm 指向它，其余用 <完整文件名>.strm
+_PRIMARY_EXT_PRIORITY = (".mp4", ".mkv", ".m4v", ".mov", ".ts", ".avi", ".wmv", ".flv", ".webm")
+
+
+def _strm_content(strm_prefix: str, rel_path: str) -> str:
+    encoded_rel_path = "/".join(urllib.parse.quote(part) for part in rel_path.lstrip("/").split("/"))
+    return f"{strm_prefix}/{encoded_rel_path}"
+
+
+def _read_strm(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def plan_expected_strms(
+    video_paths: List[str],
+    output_dir: str,
+    strm_prefix: str,
+    existing_local_strms: Set[str],
+) -> Tuple[Dict[str, str], Set[str]]:
+    """计算目标 STRM 集合 {本地路径: 内容}，以及需要改写内容的已有 STRM。
+
+    115 同一目录下常有 a.mp4 + a.mov 这类同主名不同格式的视频，以前它们抢同一个 a.strm，
+    只有一个能在媒体库里播放。现在：
+      - 主文件保持 a.strm（优先沿用本地 a.strm 当前指向的那个，避免已有 NFO/海报失配）；
+      - 其余文件生成 a.mov.strm 这样的「完整文件名.strm」；
+      - a.strm 指向的文件已不在云端时改写为新的主文件（计入「修复路径」）。
+    """
+    groups: Dict[Tuple[str, str], List[str]] = {}
+    for rel_path in video_paths:
+        filename = os.path.basename(rel_path)
+        basename, raw_ext = os.path.splitext(filename)
+        # 安全防御拦截：如果扩展名属于字幕或非视频，坚决丢弃
+        if raw_ext.lower() in COMPREHENSIVE_SUBTITLE_EXTS:
+            continue
+        key = (os.path.dirname(rel_path), basename)
+        members = groups.setdefault(key, [])
+        if rel_path not in members:
+            members.append(rel_path)
+
+    def target_of(dirname: str, strm_filename: str) -> str:
+        return os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
+
+    def ext_rank(rel_path: str) -> Tuple[int, str]:
+        ext = os.path.splitext(rel_path)[1].lower()
+        rank = _PRIMARY_EXT_PRIORITY.index(ext) if ext in _PRIMARY_EXT_PRIORITY else len(_PRIMARY_EXT_PRIORITY)
+        return rank, rel_path
+
+    expected: Dict[str, str] = {}
+    repair_targets: Set[str] = set()
+    multi_groups = 0
+    alt_count = 0
+    alt_conflicts: List[str] = []
+    deferred_alts: List[Tuple[str, str]] = []
+
+    for (dirname, basename), members in groups.items():
+        base_target = target_of(dirname, f"{basename}.strm")
+        if len(members) == 1:
+            expected[base_target] = _strm_content(strm_prefix, members[0])
+            continue
+
+        multi_groups += 1
+        contents = {m: _strm_content(strm_prefix, m) for m in members}
+        primary = None
+        if base_target in existing_local_strms:
+            current = _read_strm(base_target)
+            primary = next((m for m in members if contents[m] == current), None)
+            if primary is None:
+                repair_targets.add(base_target)
+        if primary is None:
+            primary = min(members, key=ext_rank)
+        expected[base_target] = contents[primary]
+        for m in members:
+            if m != primary:
+                deferred_alts.append((target_of(dirname, f"{os.path.basename(m)}.strm"), contents[m]))
+
+    # 「完整文件名.strm」放在最后登记，绝不覆盖任何主名 STRM（如 a.mp4.mkv 的主名恰好也是 a.mp4.strm）
+    for alt_target, content in deferred_alts:
+        if alt_target in expected:
+            alt_conflicts.append(alt_target)
+            continue
+        expected[alt_target] = content
+        alt_count += 1
+
+    if multi_groups:
+        push_log(f"同目录同主名、不同格式的视频 {multi_groups} 组，额外生成 {alt_count} 个「完整文件名.strm」索引，保证每个视频都能播放")
+    if repair_targets:
+        push_log(f"{len(repair_targets)} 个同名组的主 STRM 指向的文件已不在云端，将改写为现存文件")
+    for c in alt_conflicts[:10]:
+        push_log(f"⚠️ 同名索引冲突，跳过: {c}")
+    return expected, repair_targets
+
+
 def sync_strms_pure_1to1(
     video_paths: List[str],
     sub_paths: List[str],
@@ -210,29 +306,12 @@ def sync_strms_pure_1to1(
     os.makedirs(output_dir, exist_ok=True)
     strm_prefix = str(strm_prefix or "").rstrip('/')
 
-    push_log("正在构建本次云端目标 STRM 完整集合...")
-    expected_strms = {}
-
-    # 严格只有正片视频生成 .strm 播放索引，字幕文件绝不生成/覆盖 .strm
-    for rel_path in video_paths:
-        dirname = os.path.dirname(rel_path)
-        filename = os.path.basename(rel_path)
-        basename, raw_ext = os.path.splitext(filename)
-        
-        # 安全防御拦截：如果扩展名属于字幕或非视频，坚决丢弃
-        if raw_ext.lower() in COMPREHENSIVE_SUBTITLE_EXTS:
-            continue
-            
-        strm_filename = f"{basename}.strm"
-        target_path = os.path.join(output_dir, dirname, strm_filename) if dirname else os.path.join(output_dir, strm_filename)
-        encoded_rel_path = "/".join(urllib.parse.quote(part) for part in rel_path.lstrip("/").split("/"))
-        content = f"{strm_prefix}/{encoded_rel_path}"
-        expected_strms[target_path] = content
-
-    push_log(f"云端有效 STRM 应有: {len(expected_strms)} 个")
-
     existing_local_strms = scan_existing_strms_fast(output_dir)
     push_log(f"本地当前已有 STRM 文件: {len(existing_local_strms)} 个")
+
+    push_log("正在构建本次云端目标 STRM 完整集合...")
+    expected_strms, repair_targets = plan_expected_strms(video_paths, output_dir, strm_prefix, existing_local_strms)
+    push_log(f"云端有效 STRM 应有: {len(expected_strms)} 个")
 
     v_created = 0
     v_skipped = 0
@@ -272,6 +351,13 @@ def sync_strms_pure_1to1(
                 with open(target_path, "w", encoding="utf-8") as f:
                     f.write(content)
                 v_created += 1
+            except Exception:
+                pass
+        elif target_path in repair_targets:
+            try:
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                v_repaired += 1
             except Exception:
                 pass
         else:

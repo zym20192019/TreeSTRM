@@ -139,6 +139,13 @@
 - 升级影响：在当时全库 19.7 万条上，新旧解析只差 1 条（`cp/电子厂/-KJYNCCDH.mp4`），已提前把本地 strm/nfo/poster 改名对齐，对账结果为 0 新增、0 清理。
 - 回归测试：`tests/test_tree_parser_regression.py`（服务器没有 pytest，可直接 import 调用 `test_*` 函数）。
 
+**同主名不同格式的视频各自生成 STRM（2026-11-19）**
+- 以前 `a.mp4` 和 `a.mov` 在同一目录时抢同一个 `a.strm`，只有一个能在媒体库播放（当时全库有 799 个视频因此看不到）。
+- 新增 `plan_expected_strms`：主文件保持 `a.strm`，优先沿用本地 `a.strm` 当前指向的文件，否则按 mp4 > mkv > m4v > mov > ts > avi > … 选主文件；其余文件生成 `a.mov.strm`（完整文件名 + `.strm`）。`完整文件名.strm` 绝不覆盖任何主名 STRM，冲突时跳过并打日志。
+- `a.strm` 指向的文件已不在云端时会改写为现存文件，计入「修复路径」（以前这个计数恒为 0）。
+- 本地已有 STRM 的扫描移到规划之前（规划需要读同名组的 `a.strm` 内容，只读这几百个文件）。
+- 回归测试：`tests/test_strm_plan.py`。
+
 ## 四、已知限制
 
 1. 专区治理（`/api/categories`）只覆盖 `<default_output>/成人` 下的子目录；其他对账任务只做 STRM 对账。
