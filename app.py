@@ -14,8 +14,13 @@ from core.events import push_log, live_log_messages, send_telegram_alert, get_dy
 from services.cloud115 import create_115_session, export_115_tree
 from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
+from engine.ai_repair import find_pending_nfos, repair_pending_nfos, mark_ledger_repaired
 
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
+# AI 请求读超时：40 个文件一批时 deepseek 常需 30~60 秒，原先 30 秒导致整批降级
+AI_DIR_READ_TIMEOUT = 60
+AI_BATCH_READ_TIMEOUT = 90
+AI_SPLIT_BATCH_SIZE = 10
 # 抽封面确认损坏的文件：期限内治理直接跳过，避免每轮都从 115 重复拉取（流控）
 COVER_FAILURE_FILE = os.path.join(DATA_DIR, "cover_failures.json")
 COVER_FAILURE_SKIP_DAYS = 30
@@ -152,7 +157,7 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
             data = {"model": model, "messages": [{"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，只输出合法 JSON。"}, {"role": "user", "content": prompt}], "temperature": 0.2}
-            resp = requests.post(url, headers=headers, json=data, timeout=25).json()
+            resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_DIR_READ_TIMEOUT)).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 raise ValueError("AI response choices is empty")
@@ -240,7 +245,7 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
             data = {"model": model, "messages": [{"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，严格按序号输出合法JSON对象。"}, {"role": "user", "content": prompt}], "temperature": 0.2}
-            resp = requests.post(url, headers=headers, json=data, timeout=30).json()
+            resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_BATCH_READ_TIMEOUT)).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 raise ValueError("AI response choices is empty")
@@ -272,11 +277,12 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
             if attempt < 2:
                 time.sleep(2)
 
-    if _allow_split and len(file_names) > 40:
-        push_log(f"🔻 AI 批次连续失败，拆分重试: {folder_hint} {len(file_names)} -> 40/批")
+    # 整批失败（多为大批次读超时）时拆成小批重试；以前阈值等于默认批大小 40，实际从不触发
+    if _allow_split and len(file_names) > AI_SPLIT_BATCH_SIZE:
+        push_log(f"🔻 AI 批次连续失败，拆分重试: {folder_hint} {len(file_names)} -> {AI_SPLIT_BATCH_SIZE}/批")
         merged = {}
-        for start in range(0, len(file_names), 40):
-            merged.update(call_ai_item_auditor(file_names[start:start + 40], folder_hint, ai_cfg, _allow_split=False, failed_paths=failed_paths))
+        for start in range(0, len(file_names), AI_SPLIT_BATCH_SIZE):
+            merged.update(call_ai_item_auditor(file_names[start:start + AI_SPLIT_BATCH_SIZE], folder_hint, ai_cfg, _allow_split=False, failed_paths=failed_paths))
         return merged
 
     _record_ai_failure(folder_hint, file_names, last_error, 2)
@@ -1388,6 +1394,78 @@ def remove_category_from_queue(category: str):
             return {"status": "success", "message": f"已成功从排队序列中移除【{category}】！"}
         return {"status": "not_found", "message": f"专区【{category}】不在排队序列中"}
 
+ai_repair_progress = {"is_running": False, "category": "", "categories": [], "found": 0, "repaired": 0, "failed": 0, "ledger_marked": 0}
+ai_repair_lock = threading.Lock()
+
+
+def _run_ai_repair(categories: List[str], limit: int):
+    """重新请求 AI 修复「AI待补」兜底 NFO；只调用 AI 接口，不读 115，不影响治理队列。"""
+    try:
+        cfg = load_config()
+        output_root = cfg.get("default_output", "/Movies/TreeStrms")
+        totals = {"found": 0, "repaired": 0, "failed": 0, "ledger_marked": 0}
+        for cat in categories:
+            cat_dir = os.path.join(output_root, "成人", cat)
+            if not os.path.isdir(cat_dir):
+                push_log(f"⚠️ [AI待补修复] 专区不存在，跳过: {cat}")
+                continue
+            ai_repair_progress["category"] = cat
+            nfos = find_pending_nfos(cat_dir)
+            if limit > 0:
+                nfos = nfos[:max(0, limit - totals["found"])]
+            if not nfos:
+                continue
+            push_log(f"🩹 [AI待补修复] 专区【{cat}】发现 {len(nfos)} 个降级 NFO，开始重新请求 AI...")
+            ai_cfg = load_config().get("ai_governance", {})
+            if not (ai_cfg.get("enabled") and ai_cfg.get("api_key")):
+                push_log("❌ [AI待补修复] AI 治理未启用或缺少 api_key，中止")
+                break
+
+            def ai_call(rels: List[str], folder_rel: str) -> Dict[str, dict]:
+                return call_ai_item_auditor(rels, folder_rel, load_config().get("ai_governance", ai_cfg))
+
+            base = dict(totals)
+
+            def on_progress(st: dict):
+                ai_repair_progress.update({k: base[k] + st[k] for k in ("found", "repaired", "failed")})
+
+            try:
+                batch_size = int(ai_cfg.get("batch_size", 40))
+            except (TypeError, ValueError):
+                batch_size = 40
+            stats = repair_pending_nfos(nfos, output_root, ai_call, batch_size=batch_size, log=push_log, progress=on_progress)
+            marked = mark_ledger_repaired(AI_FAILURE_LEDGER_FILE, set(stats["repaired_paths"]))
+            for k in ("found", "repaired", "failed"):
+                totals[k] += stats[k]
+            totals["ledger_marked"] += marked
+            ai_repair_progress.update(totals)
+            push_log(f"✅ [AI待补修复] 专区【{cat}】完成：修复 {stats['repaired']} / {stats['found']}，仍失败 {stats['failed']}，台账结案 {marked} 批")
+            if limit > 0 and totals["found"] >= limit:
+                break
+        push_log(f"🎉 [AI待补修复] 全部完成：修复 {totals['repaired']} / {totals['found']}，仍失败 {totals['failed']}")
+    except Exception as e:
+        push_log(f"❌ [AI待补修复] 异常中止: {type(e).__name__}: {e}")
+    finally:
+        ai_repair_progress["is_running"] = False
+        ai_repair_progress["category"] = ""
+
+
+@app.post("/api/ai/repair_nfo")
+def trigger_ai_repair(category: str = "", limit: int = 0):
+    """修复 AI 失败后降级生成的 NFO。category 为空表示全部专区，可用逗号分隔多个。"""
+    root = os.path.join(load_config().get("default_output", "/Movies/TreeStrms"), "成人")
+    with ai_repair_lock:
+        if ai_repair_progress["is_running"]:
+            return {"status": "busy", "message": "AI 待补修复正在进行中", "progress": ai_repair_progress}
+        if category.strip():
+            cats = [c.strip() for c in category.split(",") if c.strip()]
+        else:
+            cats = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
+        ai_repair_progress.update({"is_running": True, "category": "", "categories": cats, "found": 0, "repaired": 0, "failed": 0, "ledger_marked": 0})
+    threading.Thread(target=_run_ai_repair, args=(cats, max(0, int(limit or 0))), daemon=True).start()
+    return {"status": "started", "message": f"AI 待补修复已在后台启动（{len(cats)} 个专区）"}
+
+
 @app.post("/api/sync")
 def trigger_sync(background_tasks: BackgroundTasks, rule_id: Optional[str] = None):
     if sync_progress["is_syncing"]:
@@ -1407,6 +1485,7 @@ def get_status():
         "history": load_history()[:15],
         "current_delay": get_dynamic_delay(),
         "scraper": scraper_svc.brief(),
+        "ai_repair": ai_repair_progress,
     }
 
 @app.get("/", response_class=HTMLResponse)

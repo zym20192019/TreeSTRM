@@ -146,6 +146,12 @@
 - 本地已有 STRM 的扫描移到规划之前（规划需要读同名组的 `a.strm` 内容，只读这几百个文件）。
 - 回归测试：`tests/test_strm_plan.py`。
 
+**AI 超时与「AI待补」NFO 修复（2026-11-19）**
+- 文件批次 AI 请求的读超时由 30 秒改为 90 秒（`AI_BATCH_READ_TIMEOUT`），目录审批由 25 秒改为 60 秒（`AI_DIR_READ_TIMEOUT`），连接超时 10 秒。40 个文件一批时 deepseek 常要 30~60 秒，以前经常整批超时降级。
+- 整批失败后拆成每批 10 个重试（`AI_SPLIT_BATCH_SIZE`）。原来的拆分阈值等于默认批大小 40，所以拆分从来没触发过。
+- 新增 `engine/ai_repair.py` 和 `POST /api/ai/repair_nfo?category=a,b&limit=N`（category 留空表示全部专区）。它找出带 `<tag>AI待补</tag>` 的兜底 NFO（SSHFS 上会穿透到远端 grep），用同一套 prompt 重新请求 AI，原地只改标题/简介/标签，工作室、类型和音视频流信息保留。全部修好的台账批次在 `ai_failure_batches.json` 里标记为 `repaired`。进度见 `/api/status` 的 `ai_repair` 字段。只调用 AI 接口，不读 115。
+- 回归测试：`tests/test_ai_repair.py`。
+
 ## 四、已知限制
 
 1. 专区治理（`/api/categories`）只覆盖 `<default_output>/成人` 下的子目录；其他对账任务只做 STRM 对账。
