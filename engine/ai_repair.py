@@ -16,6 +16,8 @@ import time
 import xml.etree.ElementTree as ET
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+from engine.meta_rules import keep_sequence
+
 AI_PENDING_TAG = "AI待补"
 AI_FAIL_SUFFIX = "（AI提炼失败，待补全）"
 _PENDING_MARK = f"<tag>{AI_PENDING_TAG}</tag>"
@@ -90,6 +92,7 @@ def apply_ai_result(nfo_path: str, item: dict) -> bool:
     title = str(item.get("clean_title") or "").strip()
     if not title:
         return False
+    title = keep_sequence(title, os.path.splitext(os.path.basename(nfo_path))[0])
     try:
         tree = ET.parse(nfo_path)
     except (ET.ParseError, OSError):

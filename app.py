@@ -14,6 +14,7 @@ from core.events import push_log, live_log_messages, send_telegram_alert, get_dy
 from services.cloud115 import create_115_session, export_115_tree
 from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
+from engine.meta_rules import clean_people, clean_studio, existing_titles, unique_title
 from engine.ai_repair import find_pending_nfos, repair_pending_nfos, mark_ledger_repaired
 
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
@@ -127,6 +128,16 @@ def append_history(entry: dict):
 
 # ---------- 智能文字语义与 AI 标签治理核心 ----------
 
+def _nfo_title(nfo_path: str) -> Optional[str]:
+    """读取已有 NFO 的标题，用于同目录新标题去重；解析失败返回 None。"""
+    try:
+        with open(nfo_path, "r", encoding="utf-8", errors="ignore") as f:
+            m = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", f.read(), re.S)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
 def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Optional[dict]:
     """目录级 AI 审批：失败重试 2 次，仍失败记录账本并规则降级。"""
     if not ai_cfg.get("enabled") or not ai_cfg.get("api_key"):
@@ -145,7 +156,8 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
 
 请严格输出合法的 JSON 格式（不要输出 markdown 代码块标记，直接以大括号开头结尾）：
 {
-  "studio": "规范制作者/舞团/工作室名",
+  "studio": "规范制作者/舞团/工作室/博主名（优先取目录名里的博主或作者名；确实无法判断时输出空字符串，禁止输出“未知”）",
+  "actors": ["出镜博主/模特/作者名，可从目录名或文件名提取；无法判断时输出空数组"],
   "genre": "核心分类(如: 舞蹈/街拍/直播/3D动漫)",
   "common_tags": ["该专区全部视频通用的规范标签列表, 如: 舞团, 热舞, 4K原画, 舞台表演"],
   "clean_summary": "简短的一句话专区看点介绍(30字以内)"
@@ -223,7 +235,7 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
 
 请仔细分析以下视频文件名列表。很多文件名中包含了重要的人名/模特、服饰(如瑜伽裤/皮裤/旗袍)、场景或编号等信息。
 请为每个文件提取/清洗出：
-1. clean_title: 去除编号、格式后缀、无用哈希字符(#)后的优雅展示标题
+1. clean_title: 去除格式后缀、分辨率、无用哈希字符(#)后的优雅展示标题；必须保留能区分同系列不同视频的期号/集数/序号（如 NO.060、第2期、V13、末尾的 (3)），同目录内不同文件的标题不能完全相同
 2. tags: 从该文件名中精准提炼出的专属于该视频的特征标签列表（如服饰、模特、动作、拍摄类型等，3-6个）
 3. summary: 结合文件名看点生成的简短简介（25字以内）
 
@@ -361,7 +373,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
             metadata = request_json(
                 "你是媒体库元数据整理器，严格按编号输出合法 JSON 对象。",
                 "这是媒体库元数据整理任务。只基于中文标题输出严格 JSON 对象，键必须是对应的编号(\"1\",\"2\"...)；"
-                "每项包含 clean_title、tags、summary，summary 不超过25字。不要 markdown，不要解释。\n"
+                "每项包含 clean_title、tags、summary，summary 不超过25字；clean_title 必须保留原标题里的期号/集数/序号，不同文件不能同名。不要 markdown，不要解释。\n"
                 + "\n".join(title_rows),
             )
             for i, path in enumerate(batch):
@@ -619,6 +631,7 @@ def _run_category_job(job: dict):
 
         # 先顺序极速完成 NFO 补齐与元数据准备
         work_tasks = []
+        used_titles = existing_titles(_nfo_title(x["nfo_path"]) for x in items if x["has_nfo"])
         cover_failures = _load_cover_failures()
         skipped_broken = 0
         for it in active_items:
@@ -645,10 +658,11 @@ def _run_category_job(job: dict):
                     push_log(f"⏭️ [跳过NFO] 【{video_name}】文件级 AI 未成功返回，保持 NFO 缺失，等待补偿")
                     continue
 
-                clean_title = item_ai.get("clean_title") or it["base_name"]
+                clean_title = unique_title(item_ai.get("clean_title") or it["base_name"], it["base_name"], used_titles)
                 ai_tags = item_ai.get("tags") if isinstance(item_ai.get("tags"), list) else []
                 common_tags = ai_res.get("common_tags", []) if ai_res and isinstance(ai_res.get("common_tags"), list) else []
-                meta_studio = ai_res.get("studio", "") if ai_res else ""
+                meta_studio = clean_studio(ai_res.get("studio", "")) if ai_res else ""
+                meta_actors = clean_people(ai_res.get("actors")) if ai_res else []
                 meta_genres = ai_res.get("genre", ["精选"]) if ai_res else ["精选"]
                 if isinstance(meta_genres, str):
                     meta_genres = [meta_genres]
@@ -661,6 +675,7 @@ def _run_category_job(job: dict):
                 meta = {
                     "title": clean_title,
                     "studio": meta_studio,
+                    "actors": meta_actors,
                     "genres": meta_genres,
                     "tags": list(dict.fromkeys(ai_tags + common_tags)),
                     "summary": meta_summary

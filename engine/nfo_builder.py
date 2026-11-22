@@ -20,6 +20,10 @@ def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: i
     tags_xml = "\n".join([f"  <tag>{_xml_text(t)}</tag>" for t in meta.get("tags", [])])
     genres_xml = "\n".join([f"  <genre>{_xml_text(g)}</genre>" for g in meta.get("genres", [])])
     studio = _xml_text(meta.get("studio", ""))
+    studio_xml = f"  <studio>{studio}</studio>\n" if studio.strip() else ""
+    actors_xml = "".join(
+        f"  <actor>\n    <name>{_xml_text(a)}</name>\n    <type>Actor</type>\n  </actor>\n" for a in meta.get("actors", []) if str(a).strip()
+    )
     title = _cdata_text(meta.get("title", ""))
     summary = _cdata_text(meta.get("summary", ""))
     
@@ -31,12 +35,11 @@ def write_nfo_file(nfo_path: str, meta: dict, runtime_mins: int = 0, filesize: i
   <title><![CDATA[{title}]]></title>
   <originaltitle><![CDATA[{title}]]></originaltitle>
   <sorttitle><![CDATA[{title}]]></sorttitle>
-  <studio>{studio}</studio>
-  <plot><![CDATA[{summary}]]></plot>
+{studio_xml}  <plot><![CDATA[{summary}]]></plot>
   <outline><![CDATA[{summary}]]></outline>
 {genres_xml}
 {tags_xml}
-{runtime_tag}{filesize_tag}  <fileinfo>
+{actors_xml}{runtime_tag}{filesize_tag}  <fileinfo>
     <streamdetails>
       <video>
         <width>{width}</width>
