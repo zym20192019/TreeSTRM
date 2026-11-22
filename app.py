@@ -15,6 +15,8 @@ from services.cloud115 import create_115_session, export_115_tree
 from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
 from engine.meta_rules import clean_people, clean_studio, existing_titles, unique_title
+from engine.ai_prompts import (DIR_SYSTEM, ITEM_SYSTEM, build_dir_prompt, build_fallback_prompt, build_item_prompt,
+                               category_of, clean_tags, pick_genres)
 from engine.ai_repair import find_pending_nfos, repair_pending_nfos, mark_ledger_repaired
 
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
@@ -147,28 +149,13 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
     api_key = ai_cfg.get("api_key")
     model = ai_cfg.get("model") or "minimax/minimax-m2.7:free"
     sample_files = file_names[:60]
-    prompt = f"""你是一个媒体库元数据与标签治理专家。
-请根据以下视频专区名称及文件列表，进行标签清洗、去重、归一化和题材提炼。
-
-【专区目录】: {folder_name}
-【部分文件列表】:
-""" + "\n".join([f"- {fn}" for fn in sample_files]) + """
-
-请严格输出合法的 JSON 格式（不要输出 markdown 代码块标记，直接以大括号开头结尾）：
-{
-  "studio": "规范制作者/舞团/工作室/博主名（优先取目录名里的博主或作者名；确实无法判断时输出空字符串，禁止输出“未知”）",
-  "actors": ["出镜博主/模特/作者名，可从目录名或文件名提取；无法判断时输出空数组"],
-  "genre": "核心分类(如: 舞蹈/街拍/直播/3D动漫)",
-  "common_tags": ["该专区全部视频通用的规范标签列表, 如: 舞团, 热舞, 4K原画, 舞台表演"],
-  "clean_summary": "简短的一句话专区看点介绍(30字以内)"
-}
-"""
+    prompt = build_dir_prompt(folder_name, sample_files)
     last_error = "unknown error"
     for attempt in range(1, 3):
         try:
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
-            data = {"model": model, "messages": [{"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，只输出合法 JSON。"}, {"role": "user", "content": prompt}], "temperature": 0.2}
+            data = {"model": model, "messages": [{"role": "system", "content": DIR_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0}
             resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_DIR_READ_TIMEOUT)).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
@@ -220,9 +207,10 @@ def _record_ai_failure(folder_hint: str, file_names: List[str], error: str, atte
 
 
 def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, _allow_split: bool = True,
-                         failed_paths: Optional[set] = None) -> Dict[str, dict]:
+                         failed_paths: Optional[set] = None, ctx: Optional[dict] = None) -> Dict[str, dict]:
     """请求文件级 AI（按序号索引映射机制，一次性支持 50 个直推，0 误判、0 漏项）。
     failed_paths: 若提供，最终失败批次的文件路径会加入该集合（替代读取失败账本做长度差，账本封顶 5000 条后差值恒为 0）。
+    ctx: 目录级 AI 结果（studio/actors/common_tags），告诉模型哪些是人名、哪些标签已有。
     """
     if not ai_cfg.get("enabled") or not ai_cfg.get("api_key") or not file_names:
         return {}
@@ -230,33 +218,14 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
     api_base = (ai_cfg.get("api_base") or "https://openrouter.ai/api/v1").rstrip("/")
     api_key = ai_cfg.get("api_key")
     model = ai_cfg.get("model") or "gemini-3.1-flash-lite"
-    prompt = f"""你是媒体库元数据与标签治理专家。
-专区环境: {folder_hint}
-
-请仔细分析以下视频文件名列表。很多文件名中包含了重要的人名/模特、服饰(如瑜伽裤/皮裤/旗袍)、场景或编号等信息。
-请为每个文件提取/清洗出：
-1. clean_title: 去除格式后缀、分辨率、无用哈希字符(#)后的优雅展示标题；必须保留能区分同系列不同视频的期号/集数/序号（如 NO.060、第2期、V13、末尾的 (3)），同目录内不同文件的标题不能完全相同
-2. tags: 从该文件名中精准提炼出的专属于该视频的特征标签列表（如服饰、模特、动作、拍摄类型等，3-6个）
-3. summary: 结合文件名看点生成的简短简介（25字以内）
-
-输出必须严格为合法的 JSON 对象，键必须是对应的数字编号("1", "2", ...)，格式如下：
-{{
-  "1": {{
-    "clean_title": "清洗后的展示标题",
-    "tags": ["标签1", "标签2"],
-    "summary": "简述"
-  }}
-}}
-
-待处理列表：
-""" + "\n".join([f"{i+1}. {fn}" for i, fn in enumerate(file_names)])
+    prompt = build_item_prompt(folder_hint, file_names, ctx)
 
     last_error = "unknown error"
     for attempt in range(1, 3):
         try:
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
-            data = {"model": model, "messages": [{"role": "system", "content": "你是一个严谨的媒体库元数据治理专家，严格按序号输出合法JSON对象。"}, {"role": "user", "content": prompt}], "temperature": 0.2}
+            data = {"model": model, "messages": [{"role": "system", "content": ITEM_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0}
             resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_BATCH_READ_TIMEOUT)).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
@@ -294,7 +263,8 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
         push_log(f"🔻 AI 批次连续失败，拆分重试: {folder_hint} {len(file_names)} -> {AI_SPLIT_BATCH_SIZE}/批")
         merged = {}
         for start in range(0, len(file_names), AI_SPLIT_BATCH_SIZE):
-            merged.update(call_ai_item_auditor(file_names[start:start + AI_SPLIT_BATCH_SIZE], folder_hint, ai_cfg, _allow_split=False, failed_paths=failed_paths))
+            merged.update(call_ai_item_auditor(file_names[start:start + AI_SPLIT_BATCH_SIZE], folder_hint, ai_cfg, _allow_split=False,
+                                               failed_paths=failed_paths, ctx=ctx))
         return merged
 
     _record_ai_failure(folder_hint, file_names, last_error, 2)
@@ -370,12 +340,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
                     title = os.path.splitext(os.path.basename(path))[0]
                 title_rows.append(f"{i+1}. 原路径: {path} -> 中文标题: {title}")
 
-            metadata = request_json(
-                "你是媒体库元数据整理器，严格按编号输出合法 JSON 对象。",
-                "这是媒体库元数据整理任务。只基于中文标题输出严格 JSON 对象，键必须是对应的编号(\"1\",\"2\"...)；"
-                "每项包含 clean_title、tags、summary，summary 不超过25字；clean_title 必须保留原标题里的期号/集数/序号，不同文件不能同名。不要 markdown，不要解释。\n"
-                + "\n".join(title_rows),
-            )
+            metadata = request_json(ITEM_SYSTEM, build_fallback_prompt(title_rows))
             for i, path in enumerate(batch):
                 idx_key = str(i + 1)
                 item = metadata.get(idx_key) or metadata.get(i + 1)
@@ -386,7 +351,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
                 if not isinstance(item.get("tags"), list):
                     item["tags"] = []
                 if not isinstance(item.get("summary"), str):
-                    item["summary"] = item.get("clean_title", "")
+                    item["summary"] = ""
                 result[path] = item
             push_log(f"✅ AI 翻译兜底成功: {folder_hint} ({len(batch)}个)")
         except Exception as exc:
@@ -584,7 +549,7 @@ def _run_category_job(job: dict):
             ai_res = call_ai_auditor(folder_rel_path, sample_files, current_ai_cfg)
             if ai_res:
                 gov_progress["ai_batches_done"] += 1
-                push_log(f"🤖 [{sub_folder_name}] AI 审批就绪: 分类={ai_res.get('genre')}")
+                push_log(f"🤖 [{sub_folder_name}] AI 审批就绪: 分类={ai_res.get('genres') or ai_res.get('genre')} 制作方={ai_res.get('studio')}")
 
         # 过滤本目录下真正需要处理的条目
         active_items = [it for it in items if not it.get("is_sub", False) and ((not it["has_nfo"]) or (extract_covers and not it["has_poster"]) or (probe_streams and not it["has_streamdetails"]))]
@@ -595,6 +560,14 @@ def _run_category_job(job: dict):
         items_needing_nfo = [it for it in active_items if not it["has_nfo"]]
         file_ai_details = {}
         failed_ai_paths = set()
+        dir_actors = clean_people(ai_res.get("actors")) if ai_res else []
+        # 个人博主目录 AI 常只给作者不给制作方：只有一位作者时用作者名当制作方
+        dir_studio = (clean_studio(ai_res.get("studio", "")) or (dir_actors[0] if len(dir_actors) == 1 else "")) if ai_res else ""
+        ai_ctx = {
+            "studio": dir_studio,
+            "actors": dir_actors,
+            "common_tags": ai_res.get("common_tags") if isinstance(ai_res.get("common_tags"), list) else [],
+        } if ai_res else None
         if items_needing_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
             # 使用较稳定的配置批次；异常配置回退到 50，避免过大请求超时。
             try:
@@ -612,7 +585,7 @@ def _run_category_job(job: dict):
                     batch_items_payload.append(rel_to_root)
                 names_to_audit = [os.path.relpath(x["strm_path"], output_root) for x in batch_slice]
                 push_log(f"🧠 [{sub_folder_name}] 正在并发请求 AI 深度提炼完整路径 ({i+1}~{min(i+ai_batch_chunk, len(items_needing_nfo))}/{len(items_needing_nfo)})...")
-                chunk_res = call_ai_item_auditor(batch_items_payload, folder_rel_path, current_ai_cfg, failed_paths=failed_ai_paths)
+                chunk_res = call_ai_item_auditor(batch_items_payload, folder_rel_path, current_ai_cfg, failed_paths=failed_ai_paths, ctx=ai_ctx)
                 if chunk_res:
                     # 兼容返回 key 为 base_name 或者带路径的原始 payload
                     for k, v in chunk_res.items():
@@ -661,15 +634,14 @@ def _run_category_job(job: dict):
                 clean_title = unique_title(item_ai.get("clean_title") or it["base_name"], it["base_name"], used_titles)
                 ai_tags = item_ai.get("tags") if isinstance(item_ai.get("tags"), list) else []
                 common_tags = ai_res.get("common_tags", []) if ai_res and isinstance(ai_res.get("common_tags"), list) else []
-                meta_studio = clean_studio(ai_res.get("studio", "")) if ai_res else ""
-                meta_actors = clean_people(ai_res.get("actors")) if ai_res else []
-                meta_genres = ai_res.get("genre", ["精选"]) if ai_res else ["精选"]
-                if isinstance(meta_genres, str):
-                    meta_genres = [meta_genres]
-                
-                meta_summary = item_ai.get("summary") or (ai_res.get("clean_summary") if ai_res else "") or ""
+                meta_studio = dir_studio
+                meta_actors = dir_actors
+                category = category_of(folder_rel_path)
+                meta_genres = pick_genres(category, (ai_res.get("genres") or ai_res.get("genre")) if ai_res else None)
+                meta_tags = clean_tags(ai_tags + common_tags, category=category, names=[meta_studio, *meta_actors])
+                meta_summary = item_ai.get("summary") or ((ai_res.get("summary") or ai_res.get("clean_summary")) if ai_res else "") or ""
                 if item_rel_path in failed_ai_paths:
-                    ai_tags = list(dict.fromkeys(ai_tags + ["AI待补"]))
+                    meta_tags = list(dict.fromkeys(meta_tags + ["AI待补"]))
                     meta_summary = (meta_summary or "") + "（AI提炼失败，待补全）"
 
                 meta = {
@@ -677,7 +649,7 @@ def _run_category_job(job: dict):
                     "studio": meta_studio,
                     "actors": meta_actors,
                     "genres": meta_genres,
-                    "tags": list(dict.fromkeys(ai_tags + common_tags)),
+                    "tags": meta_tags,
                     "summary": meta_summary
                 }
                 
