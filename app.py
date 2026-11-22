@@ -14,15 +14,16 @@ from core.events import push_log, live_log_messages, send_telegram_alert, get_dy
 from services.cloud115 import create_115_session, export_115_tree
 from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
-from engine.meta_rules import clean_people, clean_studio, existing_titles, unique_title
-from engine.ai_prompts import (DIR_SYSTEM, ITEM_SYSTEM, build_dir_prompt, build_fallback_prompt, build_item_prompt,
-                               category_of, clean_tags, pick_genres)
+from engine.meta_rules import existing_titles, unique_title
+from engine.ai_prompts import (DIR_SYSTEM, ITEM_SYSTEM, assemble_meta, build_dir_prompt, build_fallback_prompt,
+                               build_item_prompt, category_of, dir_context)
+from engine.ai_regen import list_regen_targets, regen_folder
 from engine.ai_repair import find_pending_nfos, repair_pending_nfos, mark_ledger_repaired
 
 AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
 # AI 请求读超时：40 个文件一批时 deepseek 常需 30~60 秒，原先 30 秒导致整批降级
-AI_DIR_READ_TIMEOUT = 60
-AI_BATCH_READ_TIMEOUT = 90
+AI_DIR_READ_TIMEOUT = 120
+AI_BATCH_READ_TIMEOUT = 90  # 下限；实际按批大小放宽，见 _batch_read_timeout
 AI_SPLIT_BATCH_SIZE = 10
 # 抽封面确认损坏的文件：期限内治理直接跳过，避免每轮都从 115 重复拉取（流控）
 COVER_FAILURE_FILE = os.path.join(DATA_DIR, "cover_failures.json")
@@ -206,6 +207,11 @@ def _record_ai_failure(folder_hint: str, file_names: List[str], error: str, atte
     return record
 
 
+def _batch_read_timeout(n: int) -> int:
+    """推理模型每条约 3 秒、并发时更慢：10 条≈140s，40 条封顶 300s。"""
+    return max(AI_BATCH_READ_TIMEOUT, min(300, 60 + 8 * n))
+
+
 def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, _allow_split: bool = True,
                          failed_paths: Optional[set] = None, ctx: Optional[dict] = None) -> Dict[str, dict]:
     """请求文件级 AI（按序号索引映射机制，一次性支持 50 个直推，0 误判、0 漏项）。
@@ -226,7 +232,7 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
             data = {"model": model, "messages": [{"role": "system", "content": ITEM_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0}
-            resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_BATCH_READ_TIMEOUT)).json()
+            resp = requests.post(url, headers=headers, json=data, timeout=(10, _batch_read_timeout(len(file_names)))).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 raise ValueError("AI response choices is empty")
@@ -560,14 +566,7 @@ def _run_category_job(job: dict):
         items_needing_nfo = [it for it in active_items if not it["has_nfo"]]
         file_ai_details = {}
         failed_ai_paths = set()
-        dir_actors = clean_people(ai_res.get("actors")) if ai_res else []
-        # 个人博主目录 AI 常只给作者不给制作方：只有一位作者时用作者名当制作方
-        dir_studio = (clean_studio(ai_res.get("studio", "")) or (dir_actors[0] if len(dir_actors) == 1 else "")) if ai_res else ""
-        ai_ctx = {
-            "studio": dir_studio,
-            "actors": dir_actors,
-            "common_tags": ai_res.get("common_tags") if isinstance(ai_res.get("common_tags"), list) else [],
-        } if ai_res else None
+        ai_ctx = dir_context(ai_res)
         if items_needing_nfo and current_ai_cfg.get("enabled") and current_ai_cfg.get("api_key"):
             # 使用较稳定的配置批次；异常配置回退到 50，避免过大请求超时。
             try:
@@ -632,27 +631,8 @@ def _run_category_job(job: dict):
                     continue
 
                 clean_title = unique_title(item_ai.get("clean_title") or it["base_name"], it["base_name"], used_titles)
-                ai_tags = item_ai.get("tags") if isinstance(item_ai.get("tags"), list) else []
-                common_tags = ai_res.get("common_tags", []) if ai_res and isinstance(ai_res.get("common_tags"), list) else []
-                meta_studio = dir_studio
-                meta_actors = dir_actors
-                category = category_of(folder_rel_path)
-                meta_genres = pick_genres(category, (ai_res.get("genres") or ai_res.get("genre")) if ai_res else None)
-                meta_tags = clean_tags(ai_tags + common_tags, category=category, names=[meta_studio, *meta_actors])
-                meta_summary = item_ai.get("summary") or ((ai_res.get("summary") or ai_res.get("clean_summary")) if ai_res else "") or ""
-                if item_rel_path in failed_ai_paths:
-                    meta_tags = list(dict.fromkeys(meta_tags + ["AI待补"]))
-                    meta_summary = (meta_summary or "") + "（AI提炼失败，待补全）"
-
-                meta = {
-                    "title": clean_title,
-                    "studio": meta_studio,
-                    "actors": meta_actors,
-                    "genres": meta_genres,
-                    "tags": meta_tags,
-                    "summary": meta_summary
-                }
-                
+                meta = assemble_meta(item_ai, ai_ctx, category_of(folder_rel_path), clean_title,
+                                     failed=item_rel_path in failed_ai_paths)
                 write_nfo_file(it["nfo_path"], meta)
                 gov_progress["nfos_generated"] += 1
                 it["has_nfo"] = True
@@ -1453,6 +1433,127 @@ def trigger_ai_repair(category: str = "", limit: int = 0):
     return {"status": "started", "message": f"AI 待补修复已在后台启动（{len(cats)} 个专区）"}
 
 
+# ----------------- 用当前提示词批量重写旧 NFO -----------------
+ai_regen_progress = {"is_running": False, "cancelling": False, "category": "", "categories": [], "folders_total": 0,
+                     "folders_done": 0, "nfos_total": 0, "ai_items": 0, "done": 0, "failed": 0, "skipped_dirs": 0}
+ai_regen_lock = threading.Lock()
+# 刮削库的 NFO 来自 mdc/官方源，不参与重写
+REGEN_WRITE_WORKERS = 16
+REGEN_BATCH_SIZE = 15  # 推理模型单批约 45s；小批 + 并发比大批串行快且不易超时
+REGEN_EXCLUDE = {"AV女优", "无码刮削", "欧美刮削", "欧美刮削_01", "FC2", "我爱的AV", "AdultMovie", "有声小说"}
+
+
+def _regen_item_call(get_cfg):
+    def call(rels: List[str], folder_rel: str, ctx: dict) -> Dict[str, dict]:
+        if ai_regen_progress["cancelling"]:
+            return {}
+        res = call_ai_item_auditor(rels, folder_rel, get_cfg(), ctx=ctx)
+        missing = [r for r in rels if r not in res]
+        if missing:
+            res.update(call_ai_translation_fallback(missing, folder_rel, get_cfg()))
+        with ai_regen_lock:
+            ai_regen_progress["ai_items"] += len(res)
+        return res
+    return call
+
+
+def _run_ai_regen(categories: List[str], folder_filter: str, limit: int, workers: int, model: str = ""):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        cfg = load_config()
+        output_root = cfg.get("default_output", "/Movies/TreeStrms")
+        ai_cfg = cfg.get("ai_governance", {})
+        if not (ai_cfg.get("enabled") and ai_cfg.get("api_key")):
+            push_log("❌ [NFO重写] AI 治理未启用或缺少 api_key，中止")
+            return
+        batch_size = REGEN_BATCH_SIZE
+        # model 非空时只对本次重写生效（如换用同系列的 -fast 版本提速），不改配置文件
+        live_cfg = lambda: {**load_config().get("ai_governance", ai_cfg), **({"model": model} if model else {})}
+        dir_call = lambda rel, rels: call_ai_auditor(rel, rels, live_cfg())
+        item_call = _regen_item_call(live_cfg)
+        budget = limit
+        for cat in categories:
+            if ai_regen_progress["cancelling"]:
+                break
+            cat_dir = os.path.join(output_root, "成人", cat)
+            if not os.path.isdir(cat_dir):
+                continue
+            ai_regen_progress["category"] = cat
+            groups = list(list_regen_targets(cat_dir, folder_filter).items())
+            if budget > 0:
+                picked, n = [], 0
+                for folder, nfos in groups:
+                    if n >= budget:
+                        break
+                    picked.append((folder, nfos))
+                    n += len(nfos)
+                groups = picked
+            if not groups:
+                continue
+            total = sum(len(v) for _, v in groups)
+            ai_regen_progress["folders_total"] += len(groups)
+            ai_regen_progress["nfos_total"] += total
+            push_log(f"✍️ [NFO重写] 专区【{cat}】{len(groups)} 个目录 / {total} 个 NFO 开始重写（AI 并发 {workers}，模型 {live_cfg().get('model')}）")
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="regen-item") as item_pool, \
+                    ThreadPoolExecutor(max_workers=REGEN_WRITE_WORKERS, thread_name_prefix="regen-write") as write_pool, \
+                    ThreadPoolExecutor(max_workers=max(1, min(4, workers)), thread_name_prefix="regen-dir") as pool:
+                futs = {pool.submit(regen_folder, folder, nfos, output_root, dir_call, item_call, batch_size, push_log,
+                                    item_pool, write_pool): folder
+                        for folder, nfos in groups}
+                for fut in as_completed(futs):
+                    try:
+                        st = fut.result()
+                    except Exception as e:
+                        push_log(f"⚠️ [NFO重写] 目录异常: {os.path.relpath(futs[fut], output_root)}: {type(e).__name__}: {str(e)[:120]}")
+                        st = {"done": 0, "failed": 0, "skipped_dir": 1}
+                    ai_regen_progress["folders_done"] += 1
+                    ai_regen_progress["done"] += st["done"]
+                    ai_regen_progress["failed"] += st["failed"]
+                    ai_regen_progress["skipped_dirs"] += st["skipped_dir"]
+                    if ai_regen_progress["cancelling"]:
+                        for f in futs:
+                            f.cancel()
+            push_log(f"✅ [NFO重写] 专区【{cat}】完成，累计重写 {ai_regen_progress['done']}，失败 {ai_regen_progress['failed']}")
+            if limit > 0:
+                budget = limit - ai_regen_progress["nfos_total"]
+                if budget <= 0:
+                    break
+        push_log(f"🎉 [NFO重写] 结束：重写 {ai_regen_progress['done']} / {ai_regen_progress['nfos_total']}，失败 {ai_regen_progress['failed']}，目录级失败 {ai_regen_progress['skipped_dirs']}")
+    except Exception as e:
+        push_log(f"❌ [NFO重写] 异常中止: {type(e).__name__}: {e}")
+    finally:
+        ai_regen_progress.update({"is_running": False, "cancelling": False, "category": ""})
+
+
+@app.post("/api/ai/regen_nfo")
+def trigger_ai_regen(category: str = "", folder: str = "", limit: int = 0, workers: int = 12, model: str = ""):
+    """用当前提示词重写旧 NFO 元数据（保留音视频流）。category 逗号分隔，空=全部非刮削专区；
+    folder 为 TreeStrms 下的相对目录（如 成人/欧美/purple bitch）时只处理该目录；已重写过的自动跳过。"""
+    output_root = load_config().get("default_output", "/Movies/TreeStrms")
+    root = os.path.join(output_root, "成人")
+    folder_abs = os.path.join(output_root, folder.strip().strip("/")) if folder.strip() else ""
+    with ai_regen_lock:
+        if ai_regen_progress["is_running"]:
+            return {"status": "busy", "message": "NFO 重写正在进行中", "progress": ai_regen_progress}
+        if folder_abs:
+            cats = [category_of(os.path.relpath(folder_abs, output_root))]
+        elif category.strip():
+            cats = [c.strip() for c in category.split(",") if c.strip()]
+        else:
+            cats = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)) and d not in REGEN_EXCLUDE)
+        ai_regen_progress.update({"is_running": True, "cancelling": False, "category": "", "categories": cats, "folders_total": 0,
+                                  "folders_done": 0, "nfos_total": 0, "ai_items": 0, "done": 0, "failed": 0, "skipped_dirs": 0})
+    threading.Thread(target=_run_ai_regen, args=(cats, folder_abs, max(0, int(limit or 0)), max(1, min(int(workers or 12), 24)), model.strip()),
+                     daemon=True).start()
+    return {"status": "started", "message": f"NFO 重写已在后台启动（{len(cats)} 个专区）"}
+
+
+@app.post("/api/ai/regen_nfo/cancel")
+def cancel_ai_regen():
+    ai_regen_progress["cancelling"] = True
+    return {"status": "ok", "message": "已请求停止：正在处理的目录完成后退出"}
+
+
 @app.post("/api/sync")
 def trigger_sync(background_tasks: BackgroundTasks, rule_id: Optional[str] = None):
     if sync_progress["is_syncing"]:
@@ -1473,6 +1574,7 @@ def get_status():
         "current_delay": get_dynamic_delay(),
         "scraper": scraper_svc.brief(),
         "ai_repair": ai_repair_progress,
+        "ai_regen": ai_regen_progress,
     }
 
 @app.get("/", response_class=HTMLResponse)
