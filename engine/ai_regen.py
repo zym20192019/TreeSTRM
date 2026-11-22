@@ -82,38 +82,45 @@ def regen_folder(folder: str, nfos: List[str], output_root: str, dir_call: DirCa
         return stats
     ctx = dir_context(ai_res)
     category = category_of(folder_rel)
-    results: Dict[str, dict] = {}
     step = max(1, batch_size)
-    batches = [rels[i:i + step] for i in range(0, len(rels), step)]
-    if pool is None:
-        outs = [item_call(b, folder_rel, ctx) for b in batches]
-    else:
-        outs = [f.result() for f in [pool.submit(item_call, b, folder_rel, ctx) for b in batches]]
-    for out in outs:
-        results.update(out or {})
-    # 失败条目保持旧标题，先占位，避免新标题与之撞名
-    used: Set[str] = {_read_title(n) for n, r in zip(nfos, rels) if not isinstance(results.get(r), dict)}
-    used.discard("")
-    jobs = []
-    for nfo, rel in zip(nfos, rels):
-        item = results.get(rel)
-        if not isinstance(item, dict):
-            stats["failed"] += 1
-            continue
-        base = os.path.basename(nfo)[:-4]
-        # 标题去重要按顺序做，写回可以并发
-        title = unique_title(str(item.get("clean_title") or "").strip() or base, base, used)
-        jobs.append((nfo, base, assemble_meta(item, ctx, category, title)))
+    batches = [(nfos[i:i + step], rels[i:i + step]) for i in range(0, len(rels), step)]
+    used: Set[str] = set()
+    pending = []  # 写回 future
 
-    def write(job) -> bool:
-        nfo, base, meta = job
+    def write(nfo: str, base: str, meta: dict) -> bool:
         try:
             return update_nfo_meta(nfo, meta)
         except Exception as e:  # 单个文件写坏不影响整目录
             log(f"⚠️ [NFO重写] 写回失败: {base[:80]}: {type(e).__name__}")
             return False
 
-    oks = list(write_pool.map(write, jobs)) if write_pool is not None else [write(j) for j in jobs]
+    # 每批出结果就立即写回：中途停止最多丢正在跑的批次（以前整目录跑完才写，大目录一停全白跑）
+    futs = [pool.submit(item_call, b_rels, folder_rel, ctx) if pool is not None else None for _, b_rels in batches]
+    for (b_nfos, b_rels), fut in zip(batches, futs):
+        try:
+            results = (fut.result() if fut is not None else item_call(b_rels, folder_rel, ctx)) or {}
+        except Exception as e:
+            log(f"⚠️ [NFO重写] 批次异常: {folder_rel}: {type(e).__name__}: {str(e)[:120]}")
+            results = {}
+        # 失败条目保持旧标题，先占位，避免新标题与之撞名
+        for nfo, rel in zip(b_nfos, b_rels):
+            if not isinstance(results.get(rel), dict):
+                t = _read_title(nfo)
+                if t:
+                    used.add(t)
+        for nfo, rel in zip(b_nfos, b_rels):
+            item = results.get(rel)
+            if not isinstance(item, dict):
+                stats["failed"] += 1
+                continue
+            base = os.path.basename(nfo)[:-4]
+            title = unique_title(str(item.get("clean_title") or "").strip() or base, base, used)
+            meta = assemble_meta(item, ctx, category, title)
+            if write_pool is not None:
+                pending.append(write_pool.submit(write, nfo, base, meta))
+            else:
+                pending.append(write(nfo, base, meta))
+    oks = [f.result() if hasattr(f, "result") else f for f in pending]
     stats["done"] += sum(oks)
     stats["failed"] += len(oks) - sum(oks)
     return stats

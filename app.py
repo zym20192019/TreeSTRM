@@ -156,7 +156,8 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
         try:
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
-            data = {"model": model, "messages": [{"role": "system", "content": DIR_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0}
+            data = {"model": model, "messages": [{"role": "system", "content": DIR_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0,
+                    **(ai_cfg.get("extra_body") or {})}
             resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_DIR_READ_TIMEOUT)).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
@@ -231,7 +232,8 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
         try:
             url = f"{api_base}/chat/completions"
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
-            data = {"model": model, "messages": [{"role": "system", "content": ITEM_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0}
+            data = {"model": model, "messages": [{"role": "system", "content": ITEM_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0,
+                    **(ai_cfg.get("extra_body") or {})}
             resp = requests.post(url, headers=headers, json=data, timeout=(10, _batch_read_timeout(len(file_names)))).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
@@ -301,7 +303,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
                     json={"model": model, "messages": [
                         {"role": "system", "content": system_text},
                         {"role": "user", "content": user_text},
-                    ], "temperature": 0},
+                    ], "temperature": 0, **(ai_cfg.get("extra_body") or {})},
                     timeout=90,
                 ).json()
                 choices = resp.get("choices") or []
@@ -1463,12 +1465,18 @@ def _run_ai_regen(categories: List[str], folder_filter: str, limit: int, workers
         cfg = load_config()
         output_root = cfg.get("default_output", "/Movies/TreeStrms")
         ai_cfg = cfg.get("ai_governance", {})
+        ai_cfg = {**ai_cfg, **(cfg.get("ai_regen") or {})}
         if not (ai_cfg.get("enabled") and ai_cfg.get("api_key")):
             push_log("❌ [NFO重写] AI 治理未启用或缺少 api_key，中止")
             return
         batch_size = REGEN_BATCH_SIZE
         # model 非空时只对本次重写生效（如换用同系列的 -fast 版本提速），不改配置文件
-        live_cfg = lambda: {**load_config().get("ai_governance", ai_cfg), **({"model": model} if model else {})}
+        def live_cfg() -> dict:
+            c = load_config()
+            merged = {**c.get("ai_governance", ai_cfg), **(c.get("ai_regen") or {}), **({"model": model} if model else {})}
+            if "fast" in str(merged.get("model", "")).lower():
+                raise RuntimeError("禁止使用 -fast 模型")
+            return merged
         dir_call = lambda rel, rels: call_ai_auditor(rel, rels, live_cfg())
         item_call = _regen_item_call(live_cfg)
         budget = limit
