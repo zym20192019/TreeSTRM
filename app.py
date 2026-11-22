@@ -1529,6 +1529,9 @@ def _run_ai_regen(categories: List[str], folder_filter: str, limit: int, workers
 def trigger_ai_regen(category: str = "", folder: str = "", limit: int = 0, workers: int = 12, model: str = ""):
     """用当前提示词重写旧 NFO 元数据（保留音视频流）。category 逗号分隔，空=全部非刮削专区；
     folder 为 TreeStrms 下的相对目录（如 成人/欧美/purple bitch）时只处理该目录；已重写过的自动跳过。"""
+    if "fast" in model.lower():
+        # -fast 版单价高，2026-11-22 用它烧光过网关额度，禁止使用
+        return {"status": "rejected", "message": "禁止使用 -fast 模型"}
     output_root = load_config().get("default_output", "/Movies/TreeStrms")
     root = os.path.join(output_root, "成人")
     folder_abs = os.path.join(output_root, folder.strip().strip("/")) if folder.strip() else ""
