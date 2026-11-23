@@ -16,7 +16,7 @@ from engine.reconciler import parse_tree_1to1, sync_strms_pure_1to1
 from engine.nfo_builder import write_nfo_file
 from engine.meta_rules import existing_titles, unique_title
 from engine.ai_prompts import (DIR_SYSTEM, ITEM_SYSTEM, assemble_meta, build_dir_prompt, build_fallback_prompt,
-                               build_item_prompt, category_of, dir_context)
+                               build_item_prompt, category_of, dir_context, normalize_item, parse_json_object)
 from engine.ai_regen import list_regen_targets, regen_folder
 from engine.ai_repair import find_pending_nfos, repair_pending_nfos, mark_ledger_repaired
 
@@ -242,19 +242,13 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
             content = message.get("content") or ""
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("AI response content is empty")
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if not json_match:
-                raise ValueError("AI response contains no JSON object")
-            parsed = json.loads(json_match.group(0))
-            if not isinstance(parsed, dict):
-                raise ValueError("AI response JSON is not an object")
+            parsed = parse_json_object(content)
 
-            # 通过序号严格 1:1 反向映射回原始完整路径
+            # 通过序号严格 1:1 反向映射回原始完整路径；缩写键（t/g/a/s）与省略的标题在 normalize_item 里还原
             result_map = {}
             for i, fn in enumerate(file_names):
-                idx_key = str(i + 1)
-                item = parsed.get(idx_key) or parsed.get(i + 1)
-                if isinstance(item, dict) and item.get("clean_title"):
+                item = normalize_item(parsed.get(str(i + 1)), fn)
+                if item:
                     result_map[fn] = item
 
             if attempt > 1:
@@ -312,13 +306,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
                 content = (choices[0].get("message") or {}).get("content") or ""
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("AI response content is empty")
-                match = re.search(r"\{.*\}", content, re.DOTALL)
-                if not match:
-                    raise ValueError("AI response contains no JSON object")
-                parsed = json.loads(match.group(0))
-                if not isinstance(parsed, dict):
-                    raise ValueError("AI response JSON is not an object")
-                return parsed
+                return parse_json_object(content)
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt < 2:
@@ -351,16 +339,9 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
             metadata = request_json(ITEM_SYSTEM, build_fallback_prompt(title_rows))
             for i, path in enumerate(batch):
                 idx_key = str(i + 1)
-                item = metadata.get(idx_key) or metadata.get(i + 1)
-                if not isinstance(item, dict):
-                    continue
-                if not isinstance(item.get("clean_title"), str) or not item.get("clean_title").strip():
-                    item["clean_title"] = os.path.splitext(os.path.basename(path))[0]
-                if not isinstance(item.get("tags"), list):
-                    item["tags"] = []
-                if not isinstance(item.get("summary"), str):
-                    item["summary"] = ""
-                result[path] = item
+                item = normalize_item(metadata.get(idx_key), path)
+                if item:
+                    result[path] = item
             push_log(f"✅ AI 翻译兜底成功: {folder_hint} ({len(batch)}个)")
         except Exception as exc:
             _record_ai_failure(f"{folder_hint} [翻译兜底]", batch, str(exc), 2, fallback=False)

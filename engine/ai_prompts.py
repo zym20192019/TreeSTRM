@@ -9,6 +9,7 @@ AI 元数据治理的提示词与后处理（纯函数，不依赖 app.py，便�
 - 标签有黑名单：泛标签、库名、人名一律过滤
 """
 
+import json
 import os
 import re
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -43,28 +44,35 @@ GENERIC_TAGS = {
 }
 
 DIR_SYSTEM = "你是严谨的媒体库元数据编辑，只输出一个合法 JSON 对象，不输出任何解释或 markdown。JSON 压缩成一行：不要缩进、不要换行、不要用代码块包裹。"
-ITEM_SYSTEM = "你是严谨的媒体库元数据编辑，严格按编号输出一个合法 JSON 对象，不输出任何解释或 markdown。JSON 压缩成一行：不要缩进、不要换行、不要用代码块包裹。"
+_ITEM_BASE = "你是严谨的媒体库元数据编辑，严格按编号输出一个合法 JSON 对象，不输出任何解释或 markdown。JSON 压缩成一行：不要缩进、不要换行、不要用代码块包裹。"
 
-ITEM_RULES = """对每个文件输出：
-1. clean_title：只清洗、不改写。
-   - 删除：扩展名、分辨率/编码（4K、1080P、HEVC）、网址和水印（xxx.com、@xxx）、「-audio」等技术后缀、哈希串、视频 ID（如 [ua-v2RMSwpg]）、剪辑时间戳（如 -00.00.10.592-00.13.16.104）、广告词（最新流出、推荐、顶流、重磅、资源、✅ 等）。
+ITEM_RULES = """对每个文件输出一个对象，键名用缩写：t=标题，g=专属标签，a=新出现的演员，s=简介。为了少输出，不需要的键直接省略；四个键都不需要时输出 {}。
+1. t：只清洗、不改写。
+   - 删除：扩展名（.strm 等）、分辨率/编码（4K、1080P、HEVC）、网址和水印（xxx.com、@xxx）、「-audio」等技术后缀、哈希串、视频 ID（如 [ua-v2RMSwpg]）、剪辑时间戳（如 -00.00.10.592-00.13.16.104）、广告词（最新流出、推荐、顶流、重磅、资源、✅ 等）、末尾多余的「-」和空格。
    - 必须保留：人名/网名、品牌、角色名、期号、集数、编号、日期、相机编号（IMG_9558、DSC_0012）、末尾的 (n) 序号——这些用来区分同系列的不同视频。
    - 日文/韩文/英文翻译成简洁中文；人名、品牌、编号保持原文。
    - 文件名已经是通顺中文时基本原样保留。
+   - 去掉扩展名后不需要任何其他改动时省略 t（系统自动用原文件名），不要重抄原名。
    - 同一批里不同文件的标题不能完全相同。
-2. tags：这个视频的具体特征（服饰、道具、场景、动作、拍摄方式），0~4 个，优先从文件名提取；文件名看不出时可以结合目录信息合理判断，没把握就给 []（目录通用标签会自动补上）。禁止泛标签（成人、成人向、合集、片段、精选、高清、视频）和出镜者/博主名；但 Cosplay 角色名、作品名（如 霞、妲己、2B、原神）可以作为标签。
-3. actors：这个文件名里明确出现、但不在「已知出镜者」里的演员/模特/博主名（如欧美演员 Mia Bandini），原样保留；没有就 []。角色名（Jinx、2B、妲己、云曦、纳兰嫣然）不是演员，放 tags；AI 生成、动漫、3D 内容的 actors 一律 []。
-4. summary：一句 20 字以内的客观简介。文件名有具体内容就据此写；文件名只是编号/日期时，可以结合目录信息写一句概括（如「刑具不醒的竖屏裸舞短视频」），但不要编造文件名里没有的画面细节；实在没有信息就给 ""。不要写库名，不要写「编号001」「第1段」这种只复述编号的话。
+2. g：这个视频的具体特征（服饰、道具、场景、动作、拍摄方式），0~4 个，优先从文件名提取；文件名看不出时可以结合目录信息合理判断，没把握就省略（目录通用标签会自动补上）。禁止泛标签（成人、成人向、合集、片段、精选、高清、视频）和出镜者/博主名；但 Cosplay 角色名、作品名（如 霞、妲己、2B、原神）可以作为标签。
+3. a：这个文件名里明确出现、但不在「已知出镜者」里的演员/模特/博主名（如欧美演员 Mia Bandini），原样保留；没有就省略。角色名（Jinx、2B、妲己、云曦、纳兰嫣然）不是演员，放 g；AI 生成、动漫、3D 内容不输出 a。
+4. s：一句 20 字以内的客观简介，只在文件名含有目录信息之外的具体内容（动作、服饰、场景、剧情、外文标题的意思）时才写。文件名只是编号/日期/期数/序号时省略 s（系统会自动用目录简介），不要编造文件名里没有的画面细节。不要写库名，不要复述编号。
 
 示例：
-- 「刑具不醒-3 (4)」（目录：刑具不醒的抖音风裸舞）→ {"clean_title":"刑具不醒-3 (4)","tags":[],"actors":[],"summary":"刑具不醒的抖音风裸舞短视频。"}
-- 「钛合金TiTi NO.101 妲己 IMG_9558」→ {"clean_title":"钛合金TiTi NO.101 妲己 IMG_9558","tags":["妲己","古风","Cosplay"],"actors":[],"summary":"妲己角色的古风Cosplay写真。"}
-- 「钛合金TiTi NO.060 沙滩排球~绿色肉色 040」→ {"clean_title":"钛合金TiTi NO.060 沙滩排球 绿色肉色 040","tags":["沙滩排球服","肉色丝袜"],"summary":"沙滩排球主题写真，绿色与肉色两套造型。"}
-- 「(4K) 캠핑에서는 모카포트가 최고지 [ua-v2RMSwpg]」→ {"clean_title":"露营还是摩卡壶最好","tags":["露营","户外"],"summary":"露营时用摩卡壶煮咖啡的日常。"}
-- 「【最新流出 明星气质】顶级PANS极品御姐『暖暖』最新大尺度 黑色蕾丝内裤 透明学生装 高清1080P原版」→ {"clean_title":"PANS 暖暖 黑色蕾丝内裤 透明学生装","tags":["黑色蕾丝","透明学生装"],"summary":"暖暖身穿透明学生装与黑色蕾丝内衣的私拍。"}
-- 「热舞猫 蕾蕾 第2期 (7)」→ {"clean_title":"热舞猫 蕾蕾 第2期 (7)","tags":[],"actors":["蕾蕾"],"summary":"热舞猫蕾蕾第2期舞蹈片段。"}
-- 「purple_bitch_Jinx-and-Mia-Bandini-threesome-1080p」（已知出镜者 Purple Bitch）→ {"clean_title":"Purple Bitch - Jinx and Mia Bandini threesome","tags":["Jinx","三人行"],"actors":["Mia Bandini"],"summary":"Jinx角色与Mia Bandini的三人场景。"}
-- 「9月 (18)」（目录信息不足）→ {"clean_title":"9月 (18)","tags":[],"summary":""}"""
+- 「刑具不醒-3 (4).strm」（目录：刑具不醒的抖音风裸舞）→ {}
+- 「9月 (18).strm」→ {}
+- 「热舞猫 蕾蕾 第2期 (7).strm」→ {"a":["蕾蕾"]}
+- 「湿润兔 黏黏团子兔 058 - .strm」→ {"t":"湿润兔 黏黏团子兔 058"}
+- 「钛合金TiTi NO.101 妲己 IMG_9558.strm」→ {"g":["妲己","古风","Cosplay"],"s":"妲己角色的古风Cosplay写真。"}
+- 「钛合金TiTi NO.060 沙滩排球~绿色肉色 040.strm」→ {"t":"钛合金TiTi NO.060 沙滩排球 绿色肉色 040","g":["沙滩排球服","肉色丝袜"],"s":"沙滩排球主题写真，绿色与肉色两套造型。"}
+- 「(4K) 캠핑에서는 모카포트가 최고지 [ua-v2RMSwpg].strm」→ {"t":"露营还是摩卡壶最好","g":["露营","户外"],"s":"露营时用摩卡壶煮咖啡的日常。"}
+- 「【最新流出 明星气质】顶级PANS极品御姐『暖暖』最新大尺度 黑色蕾丝内裤 透明学生装 高清1080P原版.strm」→ {"t":"PANS 暖暖 黑色蕾丝内裤 透明学生装","g":["黑色蕾丝","透明学生装"],"s":"暖暖身穿透明学生装与黑色蕾丝内衣的私拍。"}
+- 「purple_bitch_Jinx-and-Mia-Bandini-threesome-1080p.strm」（已知出镜者 Purple Bitch）→ {"t":"Purple Bitch - Jinx and Mia Bandini threesome","g":["Jinx","三人行"],"a":["Mia Bandini"],"s":"Jinx角色与Mia Bandini的三人场景。"}"""
+
+
+# 文件级固定规则放 system：前缀不随目录变化，本地模型（Ollama/MLX）可跨请求复用缓存，省掉大半预填充。
+# 目录级不这样做：实测 gemma4 在规则放 system 时目录级结果明显变差（studio 丢失、分类乱码）。
+ITEM_SYSTEM = _ITEM_BASE + "\n\n" + ITEM_RULES + '\n\n输出格式（键是用户列表的编号，每个文件都要有，不需要的键省略）：{"1":{},"2":{"g":[],"s":""},"3":{"t":"","g":[],"a":[],"s":""}}'
 
 
 def category_of(folder_rel_path: str) -> str:
@@ -105,26 +113,61 @@ def build_item_prompt(folder_rel_path: str, file_names: Sequence[str], ctx: Opti
 
 目录：{folder_rel_path}
 已知制作方：{studio}
-已知出镜者/博主：{actors}（这些是名字，不要按字面意思理解成题材，也不要写进 tags）
+已知出镜者/博主：{actors}（这些是名字，不要按字面意思理解成题材，也不要写进 g）
 目录通用标签（已经有了，不要重复输出）：{common}
-
-{ITEM_RULES}
-
-输出格式（键是下面列表的编号）：{{"1":{{"clean_title":"","tags":[],"actors":[],"summary":""}},"2":{{...}}}}
 
 待处理文件：
 {rows}"""
 
 
 def build_fallback_prompt(title_rows: Sequence[str]) -> str:
-    """翻译兜底第二步：基于已翻译的中文标题整理元数据。"""
-    return ("这是媒体库元数据整理任务。下面每行给出原路径和已翻译的中文标题，请按规则整理。\n\n"
-            + ITEM_RULES
-            + "\n\n输出格式（键是编号）：{\"1\":{\"clean_title\":\"\",\"tags\":[],\"actors\":[],\"summary\":\"\"}}\n\n"
+    """翻译兜底第二步：基于已翻译的中文标题整理元数据（规则在 ITEM_SYSTEM）。"""
+    return ("这是媒体库元数据整理任务。下面每行给出原路径和已翻译的中文标题，请按规则整理；中文标题与原文件名不同时必须输出 t（以中文标题为准）。\n\n"
             + "\n".join(title_rows))
 
 
 # ---------------- 后处理 ----------------
+
+# 文件级输出用缩写键省 token（生成是本地模型的主要耗时）；旧的全名键仍兼容
+_ITEM_KEYS = {"t": "clean_title", "g": "tags", "a": "actors", "s": "summary"}
+
+
+def parse_json_object(content: str) -> dict:
+    """从模型输出里取 JSON 对象；本地模型偶尔漏掉末尾 1~2 个 }，补齐后再解析。失败抛 ValueError。"""
+    start = content.find("{") if isinstance(content, str) else -1
+    if start < 0:
+        raise ValueError("AI response contains no JSON object")
+    body = content[start:content.rfind("}") + 1] or content[start:]
+    for tail in ("", "}", "}}"):
+        try:
+            parsed = json.loads(body + tail)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError("AI response JSON is not an object")
+    raise ValueError("AI response JSON is malformed")
+
+
+def normalize_item(raw: object, file_name: str) -> Optional[dict]:
+    """AI 文件级结果 → {clean_title, tags, actors, summary}。
+    t 省略（标题无需清洗）或为 "=" 时用去扩展名的原文件名；不是对象（漏项/坏 JSON）才算失败，返回 None。"""
+    if not isinstance(raw, dict):
+        return None
+    item = {full: raw[short] for short, full in _ITEM_KEYS.items() if short in raw}
+    for full in _ITEM_KEYS.values():
+        if full in raw and full not in item:
+            item[full] = raw[full]
+    title = item.get("clean_title")
+    if not isinstance(title, str) or title.strip() in ("", "=", "＝"):
+        item["clean_title"] = os.path.splitext(os.path.basename(file_name))[0].strip()
+    for key in ("tags", "actors"):
+        if not isinstance(item.get(key), list):
+            item[key] = []
+    if not isinstance(item.get("summary"), str):
+        item["summary"] = ""
+    return item
+
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", "", str(s or "")).lower()
