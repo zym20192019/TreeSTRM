@@ -35,3 +35,18 @@ def test_prompts_carry_context():
     p = build_item_prompt("成人/直播/舞蹈老师", ["a/舞蹈老师 1.strm"], {"studio": "舞蹈老师", "actors": ["舞蹈老师"], "common_tags": ["直播回放"]})
     assert "已知制作方：舞蹈老师" in p and "直播回放" in p and "1. 舞蹈老师 1.strm" in p
     assert "必须保留" in build_fallback_prompt(["1. 原路径: x -> 中文标题: y"])
+
+
+def test_pick_genres_drops_uncensored_outside_av_libraries():
+    from engine.ai_prompts import pick_genres
+    assert pick_genres("cd", ["舞蹈", "无码"]) == ["舞蹈"]
+    assert pick_genres("个人向", ["无码", "私拍"]) == ["私拍"]
+    assert pick_genres("系列", ["无码"]) == ["无码"]
+    assert pick_genres("无码合集", ["无码"]) == ["无码"]
+
+
+def test_assemble_meta_ai_library_drops_uploader_as_actor():
+    from engine.ai_prompts import assemble_meta
+    ctx = {"studio": "黄花闺头", "actors": ["黄花闺头"], "genres": [], "common_tags": []}
+    assert assemble_meta({}, ctx, "AI真人", "t")["actors"] == []
+    assert assemble_meta({}, ctx, "个人向", "t")["actors"] == ["黄花闺头"]

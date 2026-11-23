@@ -149,6 +149,12 @@ def clean_tags(tags: Iterable[object], *, category: str = "", names: Iterable[st
     return out
 
 
+# 「无码」是 AV 打码术语，只在可能收 AV 的库里由 AI 选；抄底等库里它是误判（11-23 cd 1158 条）
+UNCENSORED_OK = {"无码合集", "系列", "私藏"}
+# 这些库的「作者」是搬运/生成者，不是出镜的人：与制作方同名的演员要去掉
+AI_CATEGORIES = {"AI", "AI真人", "3d动漫"}
+
+
 def pick_genres(category: str, ai_genres: object) -> List[str]:
     """库默认分类排第一，其余只收词表内的，最多 2 个；都没有时退回库名。"""
     vocab = {g.lower(): g for g in GENRE_VOCAB}
@@ -160,6 +166,8 @@ def pick_genres(category: str, ai_genres: object) -> List[str]:
         out.append(default)
     for g in ai_genres if isinstance(ai_genres, list) else []:
         v = vocab.get(str(g or "").strip().lower())
+        if v == "无码" and category not in UNCENSORED_OK:
+            continue
         if v and v not in out:
             out.append(v)
     out = out[:2]
@@ -188,6 +196,8 @@ def assemble_meta(item_ai: dict, ctx: dict, category: str, title: str, failed: b
     ai_tags = item_ai.get("tags") if isinstance(item_ai.get("tags"), list) else []
     item_actors = item_ai.get("actors") if isinstance(item_ai.get("actors"), list) else []
     actors = clean_people(list(ctx.get("actors") or []) + item_actors)
+    if category in AI_CATEGORIES:
+        actors = [a for a in actors if a != ctx.get("studio", "")]
     genres = pick_genres(category, ctx.get("genres"))
     names = [ctx.get("studio", ""), *actors, *genres]
     tags = clean_tags(ai_tags + list(ctx.get("common_tags") or []), category=category, names=names)
