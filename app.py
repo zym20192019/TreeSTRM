@@ -17,6 +17,7 @@ from engine.nfo_builder import write_nfo_file
 from engine.meta_rules import existing_titles, unique_title
 from engine.ai_prompts import (DIR_SYSTEM, ITEM_SYSTEM, assemble_meta, build_dir_prompt, build_fallback_prompt,
                                build_item_prompt, category_of, dir_context, normalize_item, parse_json_object)
+from engine.ai_http import post_with_backend_wait
 from engine.ai_regen import list_regen_targets, regen_folder
 from engine.ai_repair import find_pending_nfos, repair_pending_nfos, mark_ledger_repaired
 
@@ -25,6 +26,11 @@ AI_FAILURE_LEDGER_FILE = os.path.join(DATA_DIR, "ai_failure_batches.json")
 AI_DIR_READ_TIMEOUT = 120
 AI_BATCH_READ_TIMEOUT = 90  # 下限；实际按批大小放宽，见 _batch_read_timeout
 AI_SPLIT_BATCH_SIZE = 10
+
+
+def _ai_post(url: str, **kw):
+    """AI 请求统一入口：连不上后端时最多等 3 分钟（隧道断线自动重连），见 engine/ai_http.py。"""
+    return post_with_backend_wait(url, log=push_log, **kw)
 # 抽封面确认损坏的文件：期限内治理直接跳过，避免每轮都从 115 重复拉取（流控）
 COVER_FAILURE_FILE = os.path.join(DATA_DIR, "cover_failures.json")
 COVER_FAILURE_SKIP_DAYS = 30
@@ -158,7 +164,7 @@ def call_ai_auditor(folder_name: str, file_names: List[str], ai_cfg: dict) -> Op
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
             data = {"model": model, "messages": [{"role": "system", "content": DIR_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0,
                     **(ai_cfg.get("extra_body") or {})}
-            resp = requests.post(url, headers=headers, json=data, timeout=(10, AI_DIR_READ_TIMEOUT)).json()
+            resp = _ai_post(url, headers=headers, json=data, timeout=(10, AI_DIR_READ_TIMEOUT)).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 raise ValueError("AI response choices is empty")
@@ -234,7 +240,7 @@ def call_ai_item_auditor(file_names: List[str], folder_hint: str, ai_cfg: dict, 
             headers = {"Authorization": f"Bearer {api_key}", "HTTP-Referer": "https://github.com/treestrm", "X-Title": "TreeSTRM", "Content-Type": "application/json"}
             data = {"model": model, "messages": [{"role": "system", "content": ITEM_SYSTEM}, {"role": "user", "content": prompt}], "temperature": 0,
                     **(ai_cfg.get("extra_body") or {})}
-            resp = requests.post(url, headers=headers, json=data, timeout=(10, _batch_read_timeout(len(file_names)))).json()
+            resp = _ai_post(url, headers=headers, json=data, timeout=(10, _batch_read_timeout(len(file_names)))).json()
             choices = resp.get("choices") or []
             if not choices or not isinstance(choices[0], dict):
                 raise ValueError("AI response choices is empty")
@@ -291,7 +297,7 @@ def call_ai_translation_fallback(file_names: List[str], folder_hint: str, ai_cfg
         last_error = "unknown error"
         for attempt in range(1, 3):
             try:
-                resp = requests.post(
+                resp = _ai_post(
                     f"{api_base}/chat/completions",
                     headers=headers,
                     json={"model": model, "messages": [
