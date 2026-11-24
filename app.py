@@ -876,7 +876,8 @@ def _run_sync_rules(rule_ids: Optional[List[str]]):
             vc, vs, vd = sync_strms_pure_1to1(
                 videos, subs, out_dir, prefix,
                 auto_cleanup=auto_clean,
-                progress_callback=_update_sync_progress
+                progress_callback=_update_sync_progress,
+                scope=r_name,
             )
             elapsed = round(time.time() - start_t, 2)
             

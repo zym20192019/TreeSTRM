@@ -299,14 +299,20 @@ def sync_strms_pure_1to1(
     output_dir: str,
     strm_prefix: str,
     auto_cleanup: bool = True,
-    progress_callback: Optional[ProgressCallback] = None
+    progress_callback: Optional[ProgressCallback] = None,
+    scope: str = "",
 ) -> Tuple[int, int, int]:
-    """1:1 纯净生成 STRM 播放索引文件"""
+    """1:1 纯净生成 STRM 播放索引文件。
+
+    scope 为规则名（目录树根目录名）：本地盘点与过期清理只在 <output_dir>/<scope> 内进行。
+    多条规则共用同一个输出目录时，不限定范围会把别的规则生成的 STRM 当成过期文件删掉。
+    """
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     strm_prefix = str(strm_prefix or "").rstrip('/')
 
-    existing_local_strms = scan_existing_strms_fast(output_dir)
+    scan_root = os.path.join(output_dir, scope) if scope else output_dir
+    existing_local_strms = scan_existing_strms_fast(scan_root) if os.path.isdir(scan_root) else set()
     push_log(f"本地当前已有 STRM 文件: {len(existing_local_strms)} 个")
 
     push_log("正在构建本次云端目标 STRM 完整集合...")
